@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&amp;family=Caprasimo&amp;family=Figtree:wght@400;600;700&amp;family=Barlow:wght@400;500;700&amp;family=Barlow+Condensed:wght@400;600&amp;family=Inter:wght@400;500;600&amp;display=swap">
+<style>body{margin:0;background:#232428;min-width:2080px;min-height:1260px;font-family:system-ui,sans-serif}a{color:#b5c4ff}a:hover{color:#d2dcff}</style>
+</helmet>
+
+<div style="position:absolute;left:48px;top:44px;width:1520px;color:#e8e8ea">
+  <div style="font:600 20px/1.3 system-ui,sans-serif;margin-bottom:8px">Visual Instrument Data Logger — capture screen, four directions</div>
+  <div style="font:400 13px/1.6 system-ui,sans-serif;color:#aeb0b4;max-width:960px">Same content in every frame: live camera with two multimeters, one draggable ROI window per device (drag to align OCR with each display), per-device live readings with confidence, and record controls. Only the visual treatment changes. The camera scene itself is constant — it is the physical world. Pick a direction (1a–1d) and I will build the full clickable MVP flow in it: ROI drag, format setup, recording with live graph, results and CSV export, one data column per device.</div>
+</div>
+
+<div id="1a" data-screen-label="1a Modernist Capture" style="position:absolute;left:48px;top:200px;width:402px">
+  <div style="display:flex;align-items:baseline;gap:10px;margin:0 0 14px">
+    <span style="font:700 12px ui-monospace,Menlo,monospace;background:#e8e8ea;color:#232428;padding:3px 8px;border-radius:5px">1a</span>
+    <span style="font:600 15px system-ui,sans-serif;color:#e8e8ea">Modernist</span>
+    <span style="font:400 12px system-ui,sans-serif;color:#9a9ca0">red on white · hard rules · zero radius</span>
+  </div>
+  <x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" hint-size="402px,874px">
+    <div style="display:flex;flex-direction:column;height:100%;font-family:'Archivo',sans-serif;color:#201e1d">
+      <div style="background:#f3f2f2;padding:62px 18px 10px;display:flex;align-items:flex-end;justify-content:space-between;border-bottom:2px solid rgba(32,30,29,0.4)">
+        <div>
+          <div style="font:800 15px 'Archivo',sans-serif;letter-spacing:-0.01em">DAQPAL</div>
+          <div style="font:600 8px 'Archivo',sans-serif;letter-spacing:0.12em;color:rgba(32,30,29,0.55)">VISUAL DATA ACQUISITION</div>
+        </div>
+        <div style="display:flex;gap:6px">
+          <span style="font:800 9px 'Archivo',sans-serif;letter-spacing:0.06em;border:1px solid rgba(32,30,29,0.4);padding:4px 8px">FLUKE 87V</span>
+          <span style="font:800 9px 'Archivo',sans-serif;letter-spacing:0.06em;background:#ffe0d9;color:#7c1405;padding:4px 8px">2 DEVICES</span>
+        </div>
+      </div>
+      <div style="position:relative;flex:1;background:#0b0c0f;overflow:hidden">
+        <div style="position:absolute;inset:0;background:radial-gradient(120% 90% at 50% 8%,rgba(140,150,170,0.10),transparent 60%)"></div>
+        <div style="position:absolute;left:24px;top:30px;width:220px;height:134px;background:#ffd84d;border-radius:10px;padding:13px;box-shadow:0 14px 34px rgba(0,0,0,0.55)">
+          <div style="font:600 8px ui-monospace,Menlo,monospace;color:#4a3c05;letter-spacing:1.2px;margin-bottom:6px">FLUKE 87V · TRUE RMS</div>
+          <div style="background:#adb8a0;border-radius:4px;height:62px;display:flex;align-items:baseline;justify-content:flex-end;gap:7px;padding:12px 14px">
+            <span style="font:600 30px ui-monospace,Menlo,monospace;color:#222818;letter-spacing:2px">12.347</span>
+            <span style="font:600 14px ui-monospace,Menlo,monospace;color:#222818">V</span>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:9px;align-items:center;justify-content:center">
+            <div style="width:22px;height:22px;border-radius:50%;background:#2e3134;border:3px solid #45484c"></div>
+            <div style="width:18px;height:8px;border-radius:4px;background:#3a3d41"></div>
+            <div style="width:18px;height:8px;border-radius:4px;background:#3a3d41"></div>
+            <div style="width:18px;height:8px;border-radius:4px;background:#3a3d41"></div>
+          </div>
+        </div>
+        <div style="position:absolute;left:158px;top:224px;width:220px;height:126px;background:#1d1f21;border-radius:10px;padding:13px;box-shadow:0 14px 34px rgba(0,0,0,0.55)">
+          <div style="font:600 8px ui-monospace,Menlo,monospace;color:#7c7f83;letter-spacing:1.2px;margin-bottom:6px">KEYSIGHT U1282A</div>
+          <div style="background:#12211a;border-radius:4px;height:58px;display:flex;align-items:baseline;justify-content:flex-end;gap:7px;padding:11px 14px">
+            <span style="font:600 28px ui-monospace,Menlo,monospace;color:#6fe0a0;letter-spacing:2px">03.998</span>
+            <span style="font:600 13px ui-monospace,Menlo,monospace;color:#6fe0a0">A</span>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:9px;align-items:center;justify-content:center">
+            <div style="width:14px;height:14px;border-radius:50%;background:#34373a"></div>
+            <div style="width:14px;height:14px;border-radius:50%;background:#34373a"></div>
+            <div style="width:14px;height:14px;border-radius:50%;background:#34373a"></div>
+            <div style="width:22px;height:8px;border-radius:4px;background:#34373a"></div>
+          </div>
+        </div>
+        <div style="position:absolute;left:31px;top:54px;width:206px;height:74px;border:2px solid #ec3013">
+          <div style="position:absolute;left:-2px;top:-24px;display:flex;align-items:center;gap:6px;background:#ec3013;color:#fff;padding:3px 8px;font:800 10px 'Archivo',sans-serif;letter-spacing:0.04em;white-space:nowrap">⠿ DMM-1 · 99.8%</div>
+          <b style="position:absolute;left:-5px;top:-5px;width:8px;height:8px;background:#ec3013"></b>
+          <b style="position:absolute;right:-5px;top:-5px;width:8px;height:8px;background:#ec3013"></b>
+          <b style="position:absolute;left:-5px;bottom:-5px;width:8px;height:8px;background:#ec3013"></b>
+          <b style="position:absolute;right:-5px;bottom:-5px;width:8px;height:8px;background:#ec3013"></b>
+        </div>
+        <div style="position:absolute;left:165px;top:248px;width:206px;height:70px;border:2px solid #ec3013">
+          <div style="position:absolute;left:-2px;top:-24px;display:flex;align-items:center;gap:6px;background:#ec3013;color:#fff;padding:3px 8px;font:800 10px 'Archivo',sans-serif;letter-spacing:0.04em;white-space:nowrap">⠿ DMM-2 · 97.2%</div>
+          <b style="position:absolute;left:-5px;top:-5px;width:8px;height:8px;background:#ec3013"></b>
+          <b style="position:absolute;right:-5px;top:-5px;width:8px;height:8px;background:#ec3013"></b>
+          <b style="position:absolute;left:-5px;bottom:-5px;width:8px;height:8px;background:#ec3013"></b>
+          <b style="position:absolute;right:-5px;bottom:-5px;width:8px;height:8px;background:#ec3013"></b>
+        </div>
+        <div style="position:absolute;left:0;right:0;bottom:12px;text-align:center;font:600 9px 'Archivo',sans-serif;letter-spacing:0.14em;color:rgba(255,255,255,0.45)">DRAG A WINDOW TO ALIGN IT WITH A DISPLAY</div>
+      </div>
+      <div style="background:#f3f2f2;border-top:2px solid rgba(32,30,29,0.4);padding:12px 18px 10px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+          <span style="font:800 10px 'Archivo',sans-serif;letter-spacing:0.1em">LIVE READINGS</span>
+          <span style="font:400 10px 'Archivo',sans-serif;color:rgba(32,30,29,0.55)">2 DEVICES · 00:00:00</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div style="background:#eae9e9;padding:10px 12px">
+            <div style="font:800 9px 'Archivo',sans-serif;letter-spacing:0.08em;color:rgba(32,30,29,0.55);margin-bottom:4px">DMM-1 · V DC</div>
+            <div style="display:flex;align-items:baseline;gap:4px"><span style="font:800 26px 'Archivo',sans-serif;letter-spacing:-0.01em">12.347</span><span style="font:800 13px 'Archivo',sans-serif">V</span></div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:7px">
+              <div style="flex:1;height:3px;background:#d7d3d3"><div style="width:99%;height:100%;background:#ec3013"></div></div>
+              <span style="font:600 9px 'Archivo',sans-serif">99.8%</span>
+              <span style="font:800 8px 'Archivo',sans-serif;background:#ffe0d9;color:#7c1405;padding:2px 5px">LOCKED</span>
+            </div>
+          </div>
+          <div style="background:#eae9e9;padding:10px 12px">
+            <div style="font:800 9px 'Archivo',sans-serif;letter-spacing:0.08em;color:rgba(32,30,29,0.55);margin-bottom:4px">DMM-2 · A DC</div>
+            <div style="display:flex;align-items:baseline;gap:4px"><span style="font:800 26px 'Archivo',sans-serif;letter-spacing:-0.01em">03.998</span><span style="font:800 13px 'Archivo',sans-serif">A</span></div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:7px">
+              <div style="flex:1;height:3px;background:#d7d3d3"><div style="width:97%;height:100%;background:#ec3013"></div></div>
+              <span style="font:600 9px 'Archivo',sans-serif">97.2%</span>
+              <span style="font:800 8px 'Archivo',sans-serif;background:#ffe0d9;color:#7c1405;padding:2px 5px">LOCKED</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="background:#f3f2f2;border-top:2px solid rgba(32,30,29,0.4);padding:12px 18px 38px;display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <div style="font:800 10px 'Archivo',sans-serif;border:1px solid rgba(32,30,29,0.4);padding:8px 10px">XX.XXX</div>
+        <div style="width:132px;background:#ec3013;color:#fff;padding:12px 14px;display:flex;align-items:center;justify-content:flex-start;gap:8px;font:800 13px 'Archivo',sans-serif;letter-spacing:0.04em;cursor:pointer">● REC</div>
+        <div style="text-align:left">
+          <div style="font:600 9px 'Archivo',sans-serif;color:rgba(32,30,29,0.55)">CAM 240 FPS</div>
+          <div style="font:600 9px 'Archivo',sans-serif;color:rgba(32,30,29,0.55)">OCR 30/S</div>
+        </div>
+      </div>
+    </div>
+  </x-import>
+</div>
+
+<div id="1b" data-screen-label="1b Organic Capture" style="position:absolute;left:552px;top:200px;width:402px">
+  <div style="display:flex;align-items:baseline;gap:10px;margin:0 0 14px">
+    <span style="font:700 12px ui-monospace,Menlo,monospace;background:#e8e8ea;color:#232428;padding:3px 8px;border-radius:5px">1b</span>
+    <span style="font:600 15px system-ui,sans-serif;color:#e8e8ea">Organic</span>
+    <span style="font:400 12px system-ui,sans-serif;color:#9a9ca0">warm cream · terracotta &amp; sage · pills</span>
+  </div>
+  <x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" hint-size="402px,874px">
+    <div style="display:flex;flex-direction:column;height:100%;font-family:'Figtree',sans-serif;color:#201e1d">
+      <div style="background:#f5ead8;padding:62px 18px 12px;display:flex;align-items:flex-end;justify-content:space-between">
+        <div>
+          <div style="font:400 18px 'Caprasimo',serif">DAQPal</div>
+          <div style="font:600 8px 'Figtree',sans-serif;letter-spacing:0.12em;color:rgba(32,30,29,0.55)">VISUAL DATA ACQUISITION</div>
+        </div>
+        <div style="display:flex;gap:6px">
+          <span style="font:700 9px 'Figtree',sans-serif;border:1px solid rgba(32,30,29,0.3);padding:4px 10px;border-radius:999px">Fluke 87V</span>
+          <span style="font:700 9px 'Figtree',sans-serif;background:#e1eecc;color:#3d472b;padding:4px 10px;border-radius:999px">2 devices</span>
+        </div>
+      </div>
+      <div style="position:relative;flex:1;background:#0b0c0f;overflow:hidden;border-radius:28px 28px 0 0">
+        <div style="position:absolute;inset:0;background:radial-gradient(120% 90% at 50% 8%,rgba(140,150,170,0.10),transparent 60%)"></div>
+        <div style="position:absolute;left:24px;top:30px;width:220px;height:134px;background:#ffd84d;border-radius:10px;padding:13px;box-shadow:0 14px 34px rgba(0,0,0,0.55)">
+          <div style="font:600 8px ui-monospace,Menlo,monospace;color:#4a3c05;letter-spacing:1.2px;margin-bottom:6px">FLUKE 87V · TRUE RMS</div>
+          <div style="background:#adb8a0;border-radius:4px;height:62px;display:flex;align-items:baseline;justify-content:flex-end;gap:7px;padding:12px 14px">
+            <span style="font:600 30px ui-monospace,Menlo,monospace;color:#222818;letter-spacing:2px">12.347</span>
+            <span style="font:600 14px ui-monospace,Menlo,monospace;color:#222818">V</span>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:9px;align-items:center;justify-content:center">
+            <div style="width:22px;height:22px;border-radius:50%;background:#2e3134;border:3px solid #45484c"></div>
+            <div style="width:18px;height:8px;border-radius:4px;background:#3a3d41"></div>
+            <div style="width:18px;height:8px;border-radius:4px;background:#3a3d41"></div>
+            <div style="width:18px;height:8px;border-radius:4px;background:#3a3d41"></div>
+          </div>
+        </div>
+        <div style="position:absolute;left:158px;top:224px;width:220px;height:126px;background:#1d1f21;border-radius:10px;padding:13px;box-shadow:0 14px 34px rgba(0,0,0,0.55)">
+          <div style="font:600 8px ui-monospace,Menlo,monospace;color:#7c7f83;letter-spacing:1.2px;margin-bottom:6px">KEYSIGHT U1282A</div>
+          <div style="background:#12211a;border-radius:4px;height:58px;display:flex;align-items:baseline;justify-content:flex-end;gap:7px;padding:11px 14px">
+            <span style="font:600 28px ui-monospace,Menlo,monospace;color:#6fe0a0;letter-spacing:2px">03.998</span>
+            <span style="font:600 13px ui-monospace,Menlo,monospace;color:#6fe0a0">A</span>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:9px;align-items:center;justify-content:center">
+            <div style="width:14px;height:14px;border-radius:50%;background:#34373a"></div>
+            <div style="width:14px;height:14px;border-radius:50%;background:#34373a"></div>
+            <div style="width:14px;height:14px;border-radius:50%;background:#34373a"></div>
+            <div style="width:22px;height:8px;border-radius:4px;background:#34373a"></div>
+          </div>
+        </div>
+        <div style="position:absolute;left:31px;top:54px;width:206px;height:74px;border:2.5px solid #c67139;border-radius:14px">
+          <div style="position:absolute;left:0;top:-26px;display:flex;align-items:center;gap:6px;background:#c67139;color:#fff;padding:4px 10px;font:700 10px 'Figtree',sans-serif;border-radius:999px;white-space:nowrap">⠿ DMM-1 · 99.8%</div>
+          <b style="position:absolute;left:-6px;top:-6px;width:10px;height:10px;border-radius:50%;background:#c67139"></b>
+          <b style="position:absolute;right:-6px;top:-6px;width:10px;height:10px;border-radius:50%;background:#c67139"></b>
+          <b style="position:absolute;left:-6px;bottom:-6px;width:10px;height:10px;border-radius:50%;background:#c67139"></b>
+          <b style="position:absolute;right:-6px;bottom:-6px;width:10px;height:10px;border-radius:50%;background:#c67139"></b>
+        </div>
+        <div style="position:absolute;left:165px;top:248px;width:206px;height:70px;border:2.5px solid #7a8a5e;border-radius:14px">
+          <div style="position:absolute;left:0;top:-26px;display:flex;align-items:center;gap:6px;background:#7a8a5e;color:#fff;padding:4px 10px;font:700 10px 'Figtree',sans-serif;border-radius:999px;white-space:nowrap">⠿ DMM-2 · 97.2%</div>
+          <b style="position:absolute;left:-6px;top:-6px;width:10px;height:10px;border-radius:50%;background:#7a8a5e"></b>
+          <b style="position:absolute;right:-6px;top:-6px;width:10px;height:10px;border-radius:50%;background:#7a8a5e"></b>
+          <b style="position:absolute;left:-6px;bottom:-6px;width:10px;height:10px;border-radius:50%;background:#7a8a5e"></b>
+          <b style="position:absolute;right:-6px;bottom:-6px;width:10px;height:10px;border-radius:50%;background:#7a8a5e"></b>
+        </div>
+        <div style="position:absolute;left:0;right:0;bottom:12px;text-align:center;font:600 10px 'Figtree',sans-serif;color:rgba(255,255,255,0.5)">Drag a window to align it with a display</div>
+      </div>
+      <div style="background:#f5ead8;padding:14px 18px 10px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+          <span style="font:400 13px 'Caprasimo',serif">Live readings</span>
+          <span style="font:400 10px 'Figtree',sans-serif;color:rgba(32,30,29,0.55)">2 devices · 00:00:00</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div style="background:#ebddc5;padding:12px 14px;border-radius:20px">
+            <div style="font:700 9px 'Figtree',sans-serif;letter-spacing:0.06em;color:rgba(32,30,29,0.55);margin-bottom:4px">DMM-1 · V DC</div>
+            <div style="display:flex;align-items:baseline;gap:4px"><span style="font:700 25px 'Figtree',sans-serif">12.347</span><span style="font:700 13px 'Figtree',sans-serif">V</span></div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:7px">
+              <div style="flex:1;height:4px;border-radius:999px;background:#dcd3c4;overflow:hidden"><div style="width:99%;height:100%;background:#c67139"></div></div>
+              <span style="font:600 9px 'Figtree',sans-serif">99.8%</span>
+              <span style="font:700 8px 'Figtree',sans-serif;background:#e1eecc;color:#3d472b;padding:2px 7px;border-radius:999px">Locked</span>
+            </div>
+          </div>
+          <div style="background:#ebddc5;padding:12px 14px;border-radius:20px">
+            <div style="font:700 9px 'Figtree',sans-serif;letter-spacing:0.06em;color:rgba(32,30,29,0.55);margin-bottom:4px">DMM-2 · A DC</div>
+            <div style="display:flex;align-items:baseline;gap:4px"><span style="font:700 25px 'Figtree',sans-serif">03.998</span><span style="font:700 13px 'Figtree',sans-serif">A</span></div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:7px">
+              <div style="flex:1;height:4px;border-radius:999px;background:#dcd3c4;overflow:hidden"><div style="width:97%;height:100%;background:#7a8a5e"></div></div>
+              <span style="font:600 9px 'Figtree',sans-serif">97.2%</span>
+              <span style="font:700 8px 'Figtree',sans-serif;background:#e1eecc;color:#3d472b;padding:2px 7px;border-radius:999px">Locked</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="background:#f5ead8;padding:10px 18px 38px;display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <div style="font:700 10px 'Figtree',sans-serif;border:1px solid rgba(32,30,29,0.3);padding:8px 12px;border-radius:999px">XX.XXX</div>
+        <div style="background:#c67139;color:#fff;padding:12px 26px;display:flex;align-items:center;gap:8px;font:700 13px 'Figtree',sans-serif;border-radius:999px;cursor:pointer">● Record</div>
+        <div>
+          <div style="font:600 9px 'Figtree',sans-serif;color:rgba(32,30,29,0.55)">Cam 240 fps</div>
+          <div style="font:600 9px 'Figtree',sans-serif;color:rgba(32,30,29,0.55)">OCR 30/s</div>
+        </div>
+      </div>
+    </div>
+  </x-import>
+</div>
+
+<div id="1c" data-screen-label="1c Industry Capture" style="position:absolute;left:1056px;top:200px;width:402px">
+  <div style="display:flex;align-items:baseline;gap:10px;margin:0 0 14px">
+    <span style="font:700 12px ui-monospace,Menlo,monospace;background:#e8e8ea;color:#232428;padding:3px 8px;border-radius:5px">1c</span>
+    <span style="font:600 15px system-ui,sans-serif;color:#e8e8ea">Industry</span>
+    <span style="font:400 12px system-ui,sans-serif;color:#9a9ca0">steel blueprint · hairlines · registration marks</span>
+  </div>
+  <x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" hint-size="402px,874px">
+    <div style="display:flex;flex-direction:column;height:100%;font-family:'Barlow',sans-serif;color:#1d1f20">
+      <div style="background:#f2f2f3;padding:62px 18px 10px;display:flex;align-items:flex-end;justify-content:space-between;border-bottom:1px solid rgba(29,31,32,0.16)">
+        <div>
+          <div style="font:600 17px 'Barlow Condensed',sans-serif;letter-spacing:0.04em">DAQPAL</div>
+          <div style="font:500 8px 'Barlow',sans-serif;letter-spacing:0.12em;color:rgba(29,31,32,0.55)">VISUAL DATA ACQUISITION</div>
+        </div>
+        <div style="display:flex;gap:6px">
+          <span style="font:600 10px 'Barlow Condensed',sans-serif;letter-spacing:0.06em;border:1px solid rgba(29,31,32,0.16);padding:3px 8px">FLUKE 87V</span>
+          <span style="font:600 10px 'Barlow Condensed',sans-serif;letter-spacing:0.06em;border:1px solid #5980a6;color:#416180;padding:3px 8px">2 DEVICES</span>
+        </div>
+      </div>
+      <div style="position:relative;flex:1;background:#0b0c0f;overflow:hidden">
+        <div style="position:absolute;inset:0;background:radial-gradient(120% 90% at 50% 8%,rgba(140,150,170,0.10),transparent 60%)"></div>
+        <div style="position:absolute;left:24px;top:30px;width:220px;height:134px;background:#ffd84d;border-radius:10px;padding:13px;box-shadow:0 14px 34px rgba(0,0,0,0.55)">
+          <div style="font:600 8px ui-monospace,Menlo,monospace;color:#4a3c05;letter-spacing:1.2px;margin-bottom:6px">FLUKE 87V · TRUE RMS</div>
+          <div style="background:#adb8a0;border-radius:4px;height:62px;display:flex;align-items:baseline;justify-content:flex-end;gap:7px;padding:12px 14px">
+            <span style="font:600 30px ui-monospace,Menlo,monospace;color:#222818;letter-spacing:2px">12.347</span>
+            <span style="font:600 14px ui-monospace,Menlo,monospace;color:#222818">V</span>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:9px;align-items:center;justify-content:center">
+            <div style="width:22px;height:22px;border-radius:50%;background:#2e3134;border:3px solid #45484c"></div>
+            <div style="width:18px;height:8px;border-radius:4px;background:#3a3d41"></div>
+            <div style="width:18px;height:8px;border-radius:4px;background:#3a3d41"></div>
+            <div style="width:18px;height:8px;border-radius:4px;background:#3a3d41"></div>
+          </div>
+        </div>
+        <div style="position:absolute;left:158px;top:224px;width:220px;height:126px;background:#1d1f21;border-radius:10px;padding:13px;box-shadow:0 14px 34px rgba(0,0,0,0.55)">
+          <div style="font:600 8px ui-monospace,Menlo,monospace;color:#7c7f83;letter-spacing:1.2px;margin-bottom:6px">KEYSIGHT U1282A</div>
+          <div style="background:#12211a;border-radius:4px;height:58px;display:flex;align-items:baseline;justify-content:flex-end;gap:7px;padding:11px 14px">
+            <span style="font:600 28px ui-monospace,Menlo,monospace;color:#6fe0a0;letter-spacing:2px">03.998</span>
+            <span style="font:600 13px ui-monospace,Menlo,monospace;color:#6fe0a0">A</span>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:9px;align-items:center;justify-content:center">
+            <div style="width:14px;height:14px;border-radius:50%;background:#34373a"></div>
+            <div style="width:14px;height:14px;border-radius:50%;background:#34373a"></div>
+            <div style="width:14px;height:14px;border-radius:50%;background:#34373a"></div>
+            <div style="width:22px;height:8px;border-radius:4px;background:#34373a"></div>
+          </div>
+        </div>
+        <div style="position:absolute;left:31px;top:54px;width:206px;height:74px;border:1px solid #749dc4">
+          <div style="position:absolute;left:-1px;top:-24px;display:flex;align-items:center;gap:6px;border:1px solid #749dc4;background:rgba(18,20,22,0.72);color:#d6ebff;padding:3px 8px;font:600 10px 'Barlow Condensed',sans-serif;letter-spacing:0.08em;white-space:nowrap">⠿ DMM-1 · 99.8%</div>
+          <i style="position:absolute;top:-6px;left:-6px;width:11px;height:11px;color:#b5d9fd" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+          <i style="position:absolute;top:-6px;right:-6px;width:11px;height:11px;color:#b5d9fd" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+          <i style="position:absolute;bottom:-6px;left:-6px;width:11px;height:11px;color:#b5d9fd" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+          <i style="position:absolute;bottom:-6px;right:-6px;width:11px;height:11px;color:#b5d9fd" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+        </div>
+        <div style="position:absolute;left:165px;top:248px;width:206px;height:70px;border:1px solid #749dc4">
+          <div style="position:absolute;left:-1px;top:-24px;display:flex;align-items:center;gap:6px;border:1px solid #749dc4;background:rgba(18,20,22,0.72);color:#d6ebff;padding:3px 8px;font:600 10px 'Barlow Condensed',sans-serif;letter-spacing:0.08em;white-space:nowrap">⠿ DMM-2 · 97.2%</div>
+          <i style="position:absolute;top:-6px;left:-6px;width:11px;height:11px;color:#b5d9fd" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+          <i style="position:absolute;top:-6px;right:-6px;width:11px;height:11px;color:#b5d9fd" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+          <i style="position:absolute;bottom:-6px;left:-6px;width:11px;height:11px;color:#b5d9fd" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+          <i style="position:absolute;bottom:-6px;right:-6px;width:11px;height:11px;color:#b5d9fd" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+        </div>
+        <div style="position:absolute;left:0;right:0;bottom:12px;text-align:center;font:500 10px 'Barlow',sans-serif;letter-spacing:0.1em;color:rgba(255,255,255,0.45)">DRAG A WINDOW TO ALIGN IT WITH A DISPLAY</div>
+      </div>
+      <div style="background:#f2f2f3;border-top:1px solid rgba(29,31,32,0.16);padding:14px 18px 12px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px">
+          <span style="font:600 12px 'Barlow Condensed',sans-serif;letter-spacing:0.1em">LIVE READINGS</span>
+          <span style="font:400 10px 'Barlow',sans-serif;color:rgba(29,31,32,0.55)">2 DEVICES · 00:00:00</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+          <div style="position:relative;border:1px solid rgba(29,31,32,0.16);padding:10px 12px">
+            <i style="position:absolute;top:-6px;left:-6px;width:11px;height:11px;color:rgba(29,31,32,0.55)" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+            <i style="position:absolute;top:-6px;right:-6px;width:11px;height:11px;color:rgba(29,31,32,0.55)" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+            <i style="position:absolute;bottom:-6px;left:-6px;width:11px;height:11px;color:rgba(29,31,32,0.55)" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+            <i style="position:absolute;bottom:-6px;right:-6px;width:11px;height:11px;color:rgba(29,31,32,0.55)" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+            <div style="font:600 10px 'Barlow Condensed',sans-serif;letter-spacing:0.08em;color:rgba(29,31,32,0.55);margin-bottom:4px">DMM-1 · V DC</div>
+            <div style="display:flex;align-items:baseline;gap:4px"><span style="font:600 28px 'Barlow Condensed',sans-serif">12.347</span><span style="font:600 14px 'Barlow Condensed',sans-serif">V</span></div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:7px">
+              <div style="flex:1;height:3px;background:#d4d4d7"><div style="width:99%;height:100%;background:#5980a6"></div></div>
+              <span style="font:500 9px 'Barlow',sans-serif">99.8%</span>
+              <span style="font:600 9px 'Barlow Condensed',sans-serif;letter-spacing:0.06em;border:1px solid #5980a6;color:#416180;padding:1px 5px">LOCKED</span>
+            </div>
+          </div>
+          <div style="position:relative;border:1px solid rgba(29,31,32,0.16);padding:10px 12px">
+            <i style="position:absolute;top:-6px;left:-6px;width:11px;height:11px;color:rgba(29,31,32,0.55)" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+            <i style="position:absolute;top:-6px;right:-6px;width:11px;height:11px;color:rgba(29,31,32,0.55)" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+            <i style="position:absolute;bottom:-6px;left:-6px;width:11px;height:11px;color:rgba(29,31,32,0.55)" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+            <i style="position:absolute;bottom:-6px;right:-6px;width:11px;height:11px;color:rgba(29,31,32,0.55)" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+            <div style="font:600 10px 'Barlow Condensed',sans-serif;letter-spacing:0.08em;color:rgba(29,31,32,0.55);margin-bottom:4px">DMM-2 · A DC</div>
+            <div style="display:flex;align-items:baseline;gap:4px"><span style="font:600 28px 'Barlow Condensed',sans-serif">03.998</span><span style="font:600 14px 'Barlow Condensed',sans-serif">A</span></div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:7px">
+              <div style="flex:1;height:3px;background:#d4d4d7"><div style="width:97%;height:100%;background:#5980a6"></div></div>
+              <span style="font:500 9px 'Barlow',sans-serif">97.2%</span>
+              <span style="font:600 9px 'Barlow Condensed',sans-serif;letter-spacing:0.06em;border:1px solid #5980a6;color:#416180;padding:1px 5px">LOCKED</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="background:#f2f2f3;border-top:1px solid rgba(29,31,32,0.16);padding:12px 18px 38px;display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <div style="font:600 11px 'Barlow Condensed',sans-serif;letter-spacing:0.06em;border:1px solid rgba(29,31,32,0.16);padding:7px 10px">XX.XXX</div>
+        <div style="position:relative;background:#5980a6;color:#fff;padding:11px 22px;display:flex;align-items:center;gap:8px;font:600 13px 'Barlow Condensed',sans-serif;letter-spacing:0.08em;cursor:pointer">● REC
+          <i style="position:absolute;top:-6px;left:-6px;width:11px;height:11px;color:rgba(29,31,32,0.55)" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+          <i style="position:absolute;top:-6px;right:-6px;width:11px;height:11px;color:rgba(29,31,32,0.55)" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+          <i style="position:absolute;bottom:-6px;left:-6px;width:11px;height:11px;color:rgba(29,31,32,0.55)" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+          <i style="position:absolute;bottom:-6px;right:-6px;width:11px;height:11px;color:rgba(29,31,32,0.55)" style-before="content:'';position:absolute;left:5px;top:0;width:1px;height:100%;background:currentColor" style-after="content:'';position:absolute;top:5px;left:0;width:100%;height:1px;background:currentColor"></i>
+        </div>
+        <div>
+          <div style="font:500 9px 'Barlow',sans-serif;color:rgba(29,31,32,0.55)">CAM 240 FPS</div>
+          <div style="font:500 9px 'Barlow',sans-serif;color:rgba(29,31,32,0.55)">OCR 30/S</div>
+        </div>
+      </div>
+    </div>
+  </x-import>
+</div>
+
+<div id="1d" data-screen-label="1d Nocturne Capture" style="position:absolute;left:1560px;top:200px;width:402px">
+  <div style="display:flex;align-items:baseline;gap:10px;margin:0 0 14px">
+    <span style="font:700 12px ui-monospace,Menlo,monospace;background:#e8e8ea;color:#232428;padding:3px 8px;border-radius:5px">1d</span>
+    <span style="font:600 15px system-ui,sans-serif;color:#e8e8ea">Nocturne</span>
+    <span style="font:400 12px system-ui,sans-serif;color:#9a9ca0">quiet dark · blurple line &amp; glow · dense</span>
+  </div>
+  <x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" dark="{{ true }}" hint-size="402px,874px">
+    <div style="display:flex;flex-direction:column;height:100%;font-family:'Inter',sans-serif;color:#e9e9ed;background:#161826">
+      <div style="padding:62px 18px 10px;display:flex;align-items:flex-end;justify-content:space-between">
+        <div>
+          <div style="font:500 15px 'Inter',sans-serif">DAQPal</div>
+          <div style="font:500 8px 'Inter',sans-serif;letter-spacing:0.12em;color:#9397ab">VISUAL DATA ACQUISITION</div>
+        </div>
+        <div style="display:flex;gap:6px">
+          <span style="font:500 9px 'Inter',sans-serif;border:1px solid #3f424d;color:#cfd3e5;padding:3px 8px;border-radius:6px">Fluke 87V</span>
+          <span style="font:500 9px 'Inter',sans-serif;border:1px solid #9184d9;color:#d2cefd;padding:3px 8px;border-radius:6px">2 devices</span>
+        </div>
+      </div>
+      <div style="height:1px;background:linear-gradient(to right,transparent,rgba(233,233,237,0.16) 48px,rgba(233,233,237,0.16) calc(100% - 48px),transparent)"></div>
+      <div style="position:relative;flex:1;background:#0b0c0f;overflow:hidden">
+        <div style="position:absolute;inset:0;background:radial-gradient(120% 90% at 50% 8%,rgba(140,150,170,0.10),transparent 60%)"></div>
+        <div style="position:absolute;left:24px;top:30px;width:220px;height:134px;background:#ffd84d;border-radius:10px;padding:13px;box-shadow:0 14px 34px rgba(0,0,0,0.55)">
+          <div style="font:600 8px ui-monospace,Menlo,monospace;color:#4a3c05;letter-spacing:1.2px;margin-bottom:6px">FLUKE 87V · TRUE RMS</div>
+          <div style="background:#adb8a0;border-radius:4px;height:62px;display:flex;align-items:baseline;justify-content:flex-end;gap:7px;padding:12px 14px">
+            <span style="font:600 30px ui-monospace,Menlo,monospace;color:#222818;letter-spacing:2px">12.347</span>
+            <span style="font:600 14px ui-monospace,Menlo,monospace;color:#222818">V</span>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:9px;align-items:center;justify-content:center">
+            <div style="width:22px;height:22px;border-radius:50%;background:#2e3134;border:3px solid #45484c"></div>
+            <div style="width:18px;height:8px;border-radius:4px;background:#3a3d41"></div>
+            <div style="width:18px;height:8px;border-radius:4px;background:#3a3d41"></div>
+            <div style="width:18px;height:8px;border-radius:4px;background:#3a3d41"></div>
+          </div>
+        </div>
+        <div style="position:absolute;left:158px;top:224px;width:220px;height:126px;background:#1d1f21;border-radius:10px;padding:13px;box-shadow:0 14px 34px rgba(0,0,0,0.55)">
+          <div style="font:600 8px ui-monospace,Menlo,monospace;color:#7c7f83;letter-spacing:1.2px;margin-bottom:6px">KEYSIGHT U1282A</div>
+          <div style="background:#12211a;border-radius:4px;height:58px;display:flex;align-items:baseline;justify-content:flex-end;gap:7px;padding:11px 14px">
+            <span style="font:600 28px ui-monospace,Menlo,monospace;color:#6fe0a0;letter-spacing:2px">03.998</span>
+            <span style="font:600 13px ui-monospace,Menlo,monospace;color:#6fe0a0">A</span>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:9px;align-items:center;justify-content:center">
+            <div style="width:14px;height:14px;border-radius:50%;background:#34373a"></div>
+            <div style="width:14px;height:14px;border-radius:50%;background:#34373a"></div>
+            <div style="width:14px;height:14px;border-radius:50%;background:#34373a"></div>
+            <div style="width:22px;height:8px;border-radius:4px;background:#34373a"></div>
+          </div>
+        </div>
+        <div style="position:absolute;left:31px;top:54px;width:206px;height:74px;border:1px solid #9184d9;border-radius:8px;box-shadow:0 0 16px rgba(145,132,217,0.35)">
+          <div style="position:absolute;left:0;top:-26px;display:flex;align-items:center;gap:6px;background:rgba(35,37,50,0.9);border:1px solid #9184d9;color:#d2cefd;padding:3px 8px;font:500 10px 'Inter',sans-serif;border-radius:6px;white-space:nowrap">⠿ DMM-1 · 99.8%</div>
+          <b style="position:absolute;left:-4px;top:-4px;width:6px;height:6px;border-radius:2px;background:#9184d9"></b>
+          <b style="position:absolute;right:-4px;top:-4px;width:6px;height:6px;border-radius:2px;background:#9184d9"></b>
+          <b style="position:absolute;left:-4px;bottom:-4px;width:6px;height:6px;border-radius:2px;background:#9184d9"></b>
+          <b style="position:absolute;right:-4px;bottom:-4px;width:6px;height:6px;border-radius:2px;background:#9184d9"></b>
+        </div>
+        <div style="position:absolute;left:165px;top:248px;width:206px;height:70px;border:1px solid #9184d9;border-radius:8px;box-shadow:0 0 16px rgba(145,132,217,0.35)">
+          <div style="position:absolute;left:0;top:-26px;display:flex;align-items:center;gap:6px;background:rgba(35,37,50,0.9);border:1px solid #9184d9;color:#d2cefd;padding:3px 8px;font:500 10px 'Inter',sans-serif;border-radius:6px;white-space:nowrap">⠿ DMM-2 · 97.2%</div>
+          <b style="position:absolute;left:-4px;top:-4px;width:6px;height:6px;border-radius:2px;background:#9184d9"></b>
+          <b style="position:absolute;right:-4px;top:-4px;width:6px;height:6px;border-radius:2px;background:#9184d9"></b>
+          <b style="position:absolute;left:-4px;bottom:-4px;width:6px;height:6px;border-radius:2px;background:#9184d9"></b>
+          <b style="position:absolute;right:-4px;bottom:-4px;width:6px;height:6px;border-radius:2px;background:#9184d9"></b>
+        </div>
+        <div style="position:absolute;left:0;right:0;bottom:12px;text-align:center;font:500 10px 'Inter',sans-serif;color:rgba(233,233,237,0.4)">Drag a window to align it with a display</div>
+      </div>
+      <div style="height:1px;background:linear-gradient(to right,transparent,rgba(233,233,237,0.16) 48px,rgba(233,233,237,0.16) calc(100% - 48px),transparent)"></div>
+      <div style="background:#161826;padding:10px 18px 8px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px">
+          <span style="font:500 11px 'Inter',sans-serif;letter-spacing:0.02em">Live readings</span>
+          <span style="font:400 10px 'Inter',sans-serif;color:#75798c">2 devices · 00:00:00</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div style="background:#232532;border:1px solid #3f424d;border-radius:8px;padding:9px 11px">
+            <div style="font:500 9px 'Inter',sans-serif;letter-spacing:0.08em;color:#9397ab;margin-bottom:3px">DMM-1 · V DC</div>
+            <div style="display:flex;align-items:baseline;gap:4px"><span style="font:500 24px 'Inter',sans-serif;letter-spacing:0.01em">12.347</span><span style="font:500 12px 'Inter',sans-serif;color:#cfd3e5">V</span></div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:6px">
+              <div style="flex:1;height:3px;border-radius:2px;background:#3f424d;overflow:hidden"><div style="width:99%;height:100%;background:#9184d9;box-shadow:0 0 8px rgba(145,132,217,0.6)"></div></div>
+              <span style="font:500 9px 'Inter',sans-serif;color:#cfd3e5">99.8%</span>
+              <span style="font:500 8px 'Inter',sans-serif;border:1px solid #5d5294;color:#d2cefd;padding:1px 5px;border-radius:4px">Locked</span>
+            </div>
+          </div>
+          <div style="background:#232532;border:1px solid #3f424d;border-radius:8px;padding:9px 11px">
+            <div style="font:500 9px 'Inter',sans-serif;letter-spacing:0.08em;color:#9397ab;margin-bottom:3px">DMM-2 · A DC</div>
+            <div style="display:flex;align-items:baseline;gap:4px"><span style="font:500 24px 'Inter',sans-serif;letter-spacing:0.01em">03.998</span><span style="font:500 12px 'Inter',sans-serif;color:#cfd3e5">A</span></div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:6px">
+              <div style="flex:1;height:3px;border-radius:2px;background:#3f424d;overflow:hidden"><div style="width:97%;height:100%;background:#9184d9;box-shadow:0 0 8px rgba(145,132,217,0.6)"></div></div>
+              <span style="font:500 9px 'Inter',sans-serif;color:#cfd3e5">97.2%</span>
+              <span style="font:500 8px 'Inter',sans-serif;border:1px solid #5d5294;color:#d2cefd;padding:1px 5px;border-radius:4px">Locked</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="height:1px;background:linear-gradient(to right,transparent,rgba(233,233,237,0.16) 48px,rgba(233,233,237,0.16) calc(100% - 48px),transparent)"></div>
+      <div style="background:#161826;padding:10px 18px 38px;display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <div style="font:500 10px 'Inter',sans-serif;border:1px solid #3f424d;color:#cfd3e5;padding:7px 10px;border-radius:6px">XX.XXX</div>
+        <div style="border:1px solid #9184d9;color:#d2cefd;padding:11px 24px;display:flex;align-items:center;gap:8px;font:500 13px 'Inter',sans-serif;border-radius:8px;cursor:pointer">● REC</div>
+        <div>
+          <div style="font:500 9px 'Inter',sans-serif;color:#75798c">Cam 240 fps</div>
+          <div style="font:500 9px 'Inter',sans-serif;color:#75798c">OCR 30/s</div>
+        </div>
+      </div>
+    </div>
+  </x-import>
+</div>
+
+</x-dc>
+</body>
+</html>

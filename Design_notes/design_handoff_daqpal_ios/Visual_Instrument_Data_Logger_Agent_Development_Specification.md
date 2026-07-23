@@ -2148,3 +2148,316 @@ It is:
 The central technical thesis is:
 
 > **The more the application knows about the instrument and display format, the less it needs to rely on general-purpose OCR.**
+
+---
+
+# 40. iOS Prototype Concrete Design (Milestones 1–7)
+
+Sections 1–39 describe the architecture and long-term vision. This section translates that architecture into an actual buildable Xcode project for the MVP loop (Section 5), scoped strictly to Milestones 1–7 (Section 35): camera preview, Vision OCR validation, manual ROI selection, format configuration, digit-level recognition stub, measurement validation, and CSV export.
+
+Explicitly out of scope for this slice, per Section 37: instrument profiles, seven-segment specialized models, PP-OCRv6, Android, and any backend.
+
+## 40.1 Screen Inventory & Navigation
+
+Use a single always-mounted root screen with overlays, not a `NavigationStack`. `AVCaptureSession` setup/teardown is expensive and must never be triggered by a navigation transition — everything that isn't the live camera view is a `.sheet`, which pauses interaction visually without tearing down the capture session underneath.
+
+```text
+InstrumentLoggerApp
+ └── ContentView
+      └── CameraCaptureScreen              (root, always mounted)
+           ├── CameraPreviewLayerView      (AVCaptureVideoPreviewLayer, full-screen)
+           ├── ROISelectionOverlay          (visible when appState.roi == nil, or "Edit ROI" tapped)
+           ├── ROIOutlineView               (thin static rect, visible once ROI is confirmed)
+           ├── LiveReadingBadge             (top-of-screen: value, unit, confidence dot)
+           ├── RecordingControlsView        (bottom bar: Record/Stop, elapsed time, sample count)
+           ├── toolbar: "Format" button ───────────► .sheet ─► FormatConfigurationSheet
+           └── toolbar: "Results" button (enabled after ≥1 stop) ─► .sheet ─► ResultsSheet
+                                                                              ├── ResultsGraphView (Swift Charts)
+                                                                              ├── measurement table (List)
+                                                                              └── ShareLink(csvFileURL) — export
+```
+
+View responsibilities:
+
+| View | Owns / Displays |
+|---|---|
+| `CameraCaptureScreen` | Composes the above; reads/writes `AppState`; owns `uiMode` transitions |
+| `CameraPreviewLayerView` | `UIViewRepresentable` wrapping `AVCaptureVideoPreviewLayer` only — pure visual, no data callbacks |
+| `ROISelectionOverlay` | Drag/resize gesture on a rect in view-space; converts to `NormalizedROI` (0...1) accounting for preview aspect-fill cropping; writes `appState.roi` |
+| `LiveReadingBadge` | Renders `appState.latestMeasurement` (value, unit, confidence-colored dot: green=accepted, amber=rejected-but-plausible, gray=none) |
+| `RecordingControlsView` | Start/stop button, wall-clock elapsed time, live sample count from `appState.recordingSession` |
+| `FormatConfigurationSheet` | Form for `DisplayFormat` fields; a "Detect from OCR" button that runs one-shot whole-ROI `VisionOCR` and pre-fills the form (a light version of Mode 3, Section 4) |
+| `ResultsGraphView` | Swift Charts line plot of accepted `Measurement.value` over time; rejected points marked distinctly |
+| `ResultsSheet` | Hosts graph + table + `ShareLink` for the generated CSV `URL` |
+
+## 40.2 State Management
+
+One `@MainActor @Observable final class AppState` (iOS 17+ Observation framework, not legacy `ObservableObject`) is the single source of truth for state read/written by both the UI and the background pipeline:
+
+```swift
+@MainActor @Observable
+final class AppState {
+    var roi: NormalizedROI?
+    var displayFormat: DisplayFormat?
+    var latestMeasurement: Measurement?
+    var uiMode: UIMode = .selectingROI
+    var recordingSession: RecordingSession?
+
+    func apply(_ measurement: Measurement) {
+        latestMeasurement = measurement
+        recordingSession?.append(measurement)   // no-op if not recording
+    }
+}
+
+enum UIMode { case selectingROI, configuringFormat, live, recording, reviewingResults }
+
+struct RecordingSession {
+    let startedAt: Date
+    private(set) var measurements: [Measurement] = []
+    mutating func append(_ m: Measurement) { measurements.append(m) }
+}
+```
+
+**Threading rule.** `AVCaptureVideoDataOutputSampleBufferDelegate` callbacks arrive on a dedicated serial background queue, never the main thread. Nothing off-main ever touches `AppState` directly — background work produces a `Measurement` value and hops to `MainActor` to publish it:
+
+```swift
+final class FrameProcessor: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+    let processor: MeasurementProcessor           // actor — see 40.3
+    private weak var appState: AppState?
+
+    func captureOutput(_ output: AVCaptureOutput,
+                        didOutput sampleBuffer: CMSampleBuffer,
+                        from connection: AVCaptureConnection) {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let ts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+        let frame = TimestampedFrame(pixelBuffer: pixelBuffer, timestamp: ts)
+        Task {
+            guard let roi = await appState?.roi else { return }
+            let format = await appState?.displayFormat
+            let measurement = await processor.process(frame: frame, roi: roi, format: format)
+            await MainActor.run { appState?.apply(measurement) }
+        }
+    }
+}
+```
+
+**Backpressure.** Set `AVCaptureVideoDataOutput.alwaysDiscardsLateVideoFrames = true`, and route processing through an `actor` (`MeasurementProcessor`), which naturally serializes work — if Vision is still busy on frame N, frame N+1 is simply dropped by AVFoundation rather than queued. The app degrades to a lower effective processing rate under load instead of falling behind, consistent with Section 20's distinction between camera capture rate and OCR processing rate.
+
+## 40.3 Testability Boundary
+
+The recognition/validation core must be exercisable without a live camera, since the iOS Simulator has no camera hardware and CI/agent-driven tests won't have a physical instrument in frame. The seam is a `FrameSource` protocol that both live capture and file-based fixtures implement identically:
+
+```swift
+// Camera/FrameSource.swift
+protocol FrameSource {
+    func frames() -> AsyncStream<TimestampedFrame>
+}
+
+struct TimestampedFrame {
+    let pixelBuffer: CVPixelBuffer
+    let timestamp: TimeInterval   // monotonic seconds since source start
+}
+```
+
+Two conformances feed the same consumer:
+
+- `LiveCameraFrameSource` — wraps `AVCaptureSession` + `AVCaptureVideoDataOutput`; yields a `TimestampedFrame` per delegate callback.
+- `FixtureFrameSource` — reads a bundled `.mov` via `AVAssetReader` (or a directory of still images + a timestamps file) and yields the same type, paced to real time or as fast as possible for test throughput.
+
+```swift
+// Processing/MeasurementProcessor.swift
+actor MeasurementProcessor {
+    func process(frame: TimestampedFrame,
+                 roi: NormalizedROI,
+                 format: DisplayFormat?) async -> Measurement {
+        // crop → (DigitSegmenter → DigitRecognizer) or whole-ROI VisionOCR
+        // → FormatValidator → PhysicalValidator → TemporalFilter → ConfidenceEngine
+    }
+}
+```
+
+A `CaptureCoordinator` (the `FrameProcessor` above) is the only piece that differs between production and test — it wires a `FrameSource` to `MeasurementProcessor` and publishes to `AppState`. Tests bypass `AppState` entirely and drive `MeasurementProcessor` directly against a fixture:
+
+```swift
+final class RecognitionPipelineTests: XCTestCase {
+    func testStableVoltageReading() async throws {
+        let fixture = FixtureFrameSource(
+            videoURL: Bundle.module.url(forResource: "dmm_001", withExtension: "mov")!)
+        let format = DisplayFormat(digitCount: 5, decimalPosition: 2,
+                                    signAllowed: false, unit: "V",
+                                    minimumValue: -20, maximumValue: 20)
+        let processor = MeasurementProcessor()
+        var results: [Measurement] = []
+        for await frame in fixture.frames() {
+            results.append(await processor.process(frame: frame, roi: knownROI, format: format))
+        }
+        let accepted = results.filter(\.accepted)
+        XCTAssertGreaterThan(Double(accepted.count) / Double(results.count), 0.95)
+        XCTAssertEqual(accepted.last?.value ?? .nan, 12.347, accuracy: 0.001)
+    }
+}
+```
+
+This directly reuses Section 30's `dataset/videos/` + `dataset/labels/` convention: fixture `.mov` files and matching ground-truth CSVs live in `InstrumentLoggerTests/Fixtures/`, and later become the Milestone 9/31 benchmark and regression dataset. No GUI automation, no physical instrument, and no Simulator camera access are needed to validate recognition and validation logic this way.
+
+One concurrency caveat to decide at project creation, not discover later: `CVPixelBuffer` is not `Sendable`. Under Swift 6 strict concurrency this needs an explicit `@unchecked Sendable` wrapper around `TimestampedFrame`, or the project stays on a language mode with minimal concurrency checking for this prototype.
+
+## 40.4 File/Folder Breakdown (Milestones 1–7 only)
+
+Layered onto Section 26's existing structure. Items marked `(new)` aren't in the original list but are required to make the loop work. Items marked `(deferred)` are named in Section 26 but out of scope for this slice.
+
+```text
+InstrumentLogger/
+├── App/
+│   ├── InstrumentLoggerApp.swift       — App entry, creates AppState, root WindowGroup
+│   └── AppState.swift            (new) — @Observable app-wide state (40.2)
+│
+├── Camera/
+│   ├── CameraPermissionManager.swift (new) — AVCaptureDevice auth request/status
+│   ├── CameraManager.swift             — owns AVCaptureSession lifecycle, input/output config
+│   ├── FrameSource.swift         (new) — protocol + TimestampedFrame (40.3 boundary)
+│   ├── LiveCameraFrameSource.swift(new)— FrameSource impl backed by AVCaptureVideoDataOutput
+│   ├── FixtureFrameSource.swift  (new) — FrameSource impl backed by a bundled video/images
+│   ├── CameraPreview.swift             — UIViewRepresentable for AVCaptureVideoPreviewLayer
+│   └── FrameProcessor.swift            — CaptureCoordinator: FrameSource → MeasurementProcessor → AppState
+│
+├── Display/
+│   ├── NormalizedROI.swift       (new) — {x,y,width,height} in 0...1, Codable
+│   └── DigitSegmenter.swift            — ROI + digitCount → N equal-width sub-rects (naive fixed-pitch stub)
+│   (DisplayDetector.swift, ROITracker.swift, PerspectiveCorrection.swift — deferred)
+│
+├── OCR/
+│   ├── OCRManager.swift                — facade; for this slice, routes to VisionOCR only
+│   ├── VisionOCR.swift                 — VNRecognizeTextRequest wrapper (whole-ROI text)
+│   └── DigitRecognizer.swift           — M5 stub: per-digit-cell VNRecognizeTextRequest, charset-filtered to 0–9
+│   (PaddleOCR.swift, SevenSegmentRecognizer.swift — deferred)
+│
+├── Instruments/                        — deferred entirely (out of scope per Section 37)
+│
+├── Processing/
+│   ├── FormatValidator.swift           — recognized text/digits → DisplayFormat grammar check → Double?
+│   ├── PhysicalValidator.swift         — range check + rate-of-change vs previous accepted Measurement
+│   ├── TemporalFilter.swift            — rolling-window per-digit majority vote (minimal form of M8)
+│   ├── ConfidenceEngine.swift          — weighted confidence per Section 19 formula
+│   └── MeasurementProcessor.swift      — the pure pipeline actor (40.3); orchestrates the above
+│
+├── Data/
+│   ├── DisplayFormat.swift       (new) — struct from Section 10, extended (see clarification below)
+│   ├── Measurement.swift               — struct from Section 18, + RejectionReason enum
+│   ├── MeasurementStore.swift          — RecordingSession's measurement array (append-only)
+│   ├── Experiment.swift                — minimal session metadata (id, startedAt, format, roi)
+│   └── CSVExporter.swift               — [Measurement] → CSV string/file per Section 25
+│
+└── UI/
+    ├── CameraCaptureScreen.swift       — root screen
+    ├── ROISelectionOverlay.swift       — drag/resize gesture, view-space ↔ normalized coords
+    ├── FormatConfigurationSheet.swift  — form for DisplayFormat
+    ├── LiveReadingBadge.swift    (new)
+    ├── RecordingControlsView.swift (new)
+    ├── ResultsView.swift               — hosts ResultsGraphView + table + ShareLink export
+    └── ResultsGraphView.swift    (new) — Swift Charts line plot
+
+InstrumentLoggerTests/
+├── Fixtures/                     (new) — dmm_001.mov + dmm_001.csv, etc. (Section 30 layout reused)
+└── RecognitionPipelineTests.swift(new) — drives MeasurementProcessor directly against fixtures
+```
+
+Two doc clarifications to the existing structs (not structural changes):
+
+- `DisplayFormat.decimalPosition`: document explicitly as *count of digits before the decimal separator* (`2` → `"12.347"` for a 5-digit format; `0` → decimal at the very front; `nil` → integer display, no decimal).
+- `Measurement.rejectionReason`: promote to a typed enum for compile-time safety, CSV-compatible via `rawValue`:
+  ```swift
+  enum RejectionReason: String, Codable {
+      case lowOCRConfidence = "LOW_OCR_CONFIDENCE"
+      case invalidFormat = "INVALID_FORMAT"
+      case outOfRange = "OUT_OF_RANGE"
+      case temporalInconsistency = "TEMPORAL_INCONSISTENCY"
+      case excessiveRateOfChange = "EXCESSIVE_RATE_OF_CHANGE"
+      case ambiguousDigit = "AMBIGUOUS_DIGIT"
+      case displayLost = "DISPLAY_LOST"
+  }
+  ```
+
+## 40.5 Build Order
+
+**Step 0 — Project skeleton.** Create Xcode project `InstrumentLogger`, iOS 17 deployment target, SwiftUI App lifecycle. Add `NSCameraUsageDescription` to Info.plist. Create the folder groups above (empty). Create the `InstrumentLoggerTests` target now, with an empty `Fixtures/` folder, so it isn't bolted on later.
+
+**Milestone 1 — Camera.**
+1. `CameraPermissionManager.swift` — request `.video` access, publish status.
+2. `CameraManager.swift` — configure `AVCaptureSession` (back camera input, `AVCaptureVideoDataOutput` + preview layer), start on a background queue.
+3. `CameraPreview.swift` — `UIViewRepresentable` for the preview layer.
+4. `CameraCaptureScreen.swift` (minimal) — full-screen `CameraPreview`.
+5. Verify **on a physical device** (Simulator has no camera): app launches, requests permission, shows a correctly-oriented live feed. → M1 done.
+
+**Milestone 2 — Vision OCR.**
+6. `FrameSource.swift` — protocol + `TimestampedFrame`.
+7. `LiveCameraFrameSource.swift` — bridge the sample buffer delegate into `AsyncStream`.
+8. `VisionOCR.swift` — `func recognizeText(in: CVPixelBuffer) async throws -> [VNRecognizedTextObservation]`.
+9. `MeasurementProcessor.swift` (v0) — runs `VisionOCR` over the whole frame, returns best text candidate (no ROI/format yet).
+10. `FrameProcessor.swift` — consumes `LiveCameraFrameSource.frames()`, calls the processor, hops to `MainActor`, sets a debug string on `AppState`.
+11. Add a debug `Text` overlay showing recognized text.
+12. Verify: point at a physical DMM showing "12.347 V"; overlay shows "Detected: 12.347 V" with reasonable frequency. → M2 done (validation only, per Section 8's own framing of this phase).
+
+**Milestone 3 — ROI.**
+13. `NormalizedROI.swift`.
+14. `ROISelectionOverlay.swift` — draggable/resizable rect; convert view-space drag to normalized coords (account for aspect-fill cropping between preview layer and captured buffer — this is the one real gotcha in this milestone).
+15. `AppState.roi` added; `CameraCaptureScreen` shows the overlay until confirmed, then a static outline.
+16. `MeasurementProcessor` crops the `CVPixelBuffer` to `roi` before running `VisionOCR` (CIImage crop).
+17. Verify: a tight ROI around just the digits measurably improves reliability/latency vs. whole-frame. → M3 done.
+
+**Milestone 4 — Format Configuration.**
+18. `DisplayFormat.swift`.
+19. `FormatConfigurationSheet.swift` — form; "Confirm" writes `appState.displayFormat`.
+20. `FormatValidator.swift` — parse OCR text against the format grammar → `Double?`.
+21. `MeasurementProcessor` now only emits a candidate `Measurement` when `FormatValidator` succeeds.
+22. `LiveReadingBadge.swift` — shows the parsed value.
+23. Verify: with format configured, malformed OCR output no longer produces a displayed value; well-formed output does. → M4 done. This is also Section 37's "First Development Task" success criterion.
+
+**Milestone 5 — Digit-level recognition stub.**
+24. `DigitSegmenter.swift` — ROI + `digitCount` → N equal-width sub-rects (document the fixed-pitch assumption explicitly — it's a stub; real segmentation is Milestone 11+).
+25. `DigitRecognizer.swift` — per-cell `VNRecognizeTextRequest`, filtered to `0–9`, with per-position confidence.
+26. `MeasurementProcessor` switches to the digit-cell path once `displayFormat` is set (whole-ROI `VisionOCR` stays for the "Detect from OCR" button in the format sheet).
+27. Verify: per-position confidences are visible (debug log/UI); reconstructed value matches the whole-ROI approach on the same instrument.
+
+**Milestone 6 — Measurement validation.**
+28. `PhysicalValidator.swift` — range + rate-of-change checks.
+29. `TemporalFilter.swift` — rolling-window per-digit majority vote.
+30. `ConfidenceEngine.swift` — weighted confidence per Section 19's formula → sets `accepted`/`rejectionReason`.
+31. Wire the full chain in `MeasurementProcessor`.
+32. Verify **with a fixture, not the live camera**: write `RecognitionPipelineTests.testStableVoltageReading` (40.3) against a recorded `dmm_001.mov` + ground-truth CSV; assert acceptance rate and value accuracy; add a second fixture with an injected out-of-range/garbage frame and assert it's rejected. → M6 done, and this is the point automated tests become meaningful.
+
+**Milestone 7 — CSV.**
+33. Finalize `Measurement.swift` with `RejectionReason`.
+34. `MeasurementStore.swift` / `RecordingSession` — `startRecording()/stopRecording()` append accepted (and optionally rejected) measurements.
+35. `RecordingControlsView.swift` — wired to `AppState`.
+36. `CSVExporter.swift` — `[Measurement] → CSV` per Section 25's format, written to a temp file `URL`.
+37. `ResultsView.swift` + `ResultsGraphView.swift` (Swift Charts) — shown after Stop, with `ShareLink(item: csvURL)` for export.
+38. Verify end-to-end against Section 38's Definition of Done, items 1–20: launch → permission → ROI → format → live value → record → stop → graph → export CSV → reopen in Excel/Python → values match the instrument. → MVP done.
+
+Milestone 1's camera verification requires a physical device — the Simulator has no camera hardware. Everything from Milestone 3 onward (ROI drag, format sheet, buttons, and Milestone 6's recognition/validation testing via fixture video) is fully exercisable in the Simulator, and Milestone 6's fixture-based tests specifically require neither a camera nor GUI automation at all.
+
+---
+
+# 41. Agent-Driven Simulator Testing
+
+To let a coding agent build, run, and test this prototype against the iOS Simulator without needing a physical device or broad control of the host Mac, two MCP (Model Context Protocol) servers cover the full loop:
+
+```text
+Agent
+  │
+  ├── XcodeBuildMCP  — build, boot Simulator, run app/tests,
+  │                    screenshots, logs, basic tap/type UI automation
+  │
+  └── Maestro MCP    — higher-level, self-correcting E2E flows in
+                        plain YAML/English; scans Swift source for
+                        screens/elements, retries on failure using
+                        annotated screenshots
+```
+
+**XcodeBuildMCP** is the primary tool for the build-verify loop in Section 40.5 — e.g. "build the project, boot the Simulator, run `RecognitionPipelineTests`, confirm pass." Install: `npm install -g xcodebuildmcp@latest`, then register it as an MCP server.
+
+**Maestro MCP** is better suited than raw tap-coordinates for testing full user journeys once there's UI to click through (select ROI → confirm format → see live value → record → export), since it's code-aware and self-corrects on failure. Bundled with the Maestro CLI at no extra cost.
+
+A generic desktop-control MCP (whole-Mac mouse/keyboard automation) is deliberately not used here. XcodeBuildMCP and Maestro MCP already cover build, run, test, and UI-flow automation while keeping the agent's control scoped to the Simulator sandbox rather than the full host machine.
+
+Camera-dependent verification (Milestone 1) still requires a physical device and is outside what Simulator-scoped MCP tooling can exercise — the Section 40.3 testability boundary (`FixtureFrameSource` + `RecognitionPipelineTests`) is what makes the recognition/validation core (Milestone 6 onward) verifiable by an agent through the Simulator alone, with no camera or GUI automation involved at all.

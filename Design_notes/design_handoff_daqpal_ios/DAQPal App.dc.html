@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;800&amp;display=swap">
+<style>body{margin:0;background:#232428;font-family:'Archivo',sans-serif}a{color:#f5b700}a:hover{color:#ffd24d}@keyframes recpulse{0%,100%{opacity:1}50%{opacity:0.3}}</style>
+</helmet>
+<div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:40px 20px 60px;gap:16px">
+  <div style="text-align:center;color:#e8e8ea;max-width:560px">
+    <div style="font:800 18px 'Archivo',sans-serif;letter-spacing:0.02em">DAQPAL — interactive MVP prototype (Fluke yellow)</div>
+    <div style="font:400 12px/1.6 'Archivo',sans-serif;color:#aeb0b4;margin-top:6px">Drag the yellow ROI windows onto each meter display — the reading locks when aligned and shows SEARCHING when not. ⚙ opens display-format setup. ● REC records with live graph and rejected-reading flags; STOP opens results with graph, table and CSV export (one column set per device).</div>
+  </div>
+  <x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" hint-size="402px,874px">
+    <div style="position:relative;display:flex;flex-direction:column;height:100%;background:#F7E9BC;color:#2B2820;font-family:'Archivo',sans-serif;overflow:hidden">
+      <div style="padding:58px 16px 10px;display:flex;align-items:flex-end;justify-content:space-between">
+        <div>
+          <div style="font:800 15px 'Archivo',sans-serif;letter-spacing:-0.01em">DAQPAL</div>
+          <div style="font:600 8px 'Archivo',sans-serif;letter-spacing:0.12em;color:rgba(43,40,32,0.55)">VISUAL DATA ACQUISITION</div>
+        </div>
+        <div style="display:flex;gap:6px">
+          <span style="font:800 9px 'Archivo',sans-serif;letter-spacing:0.06em;border:1px solid rgba(43,40,32,0.4);padding:4px 8px;border-radius:4px">FLUKE 87V</span>
+          <span style="font:800 9px 'Archivo',sans-serif;letter-spacing:0.06em;background:#2B2820;color:#FFC20E;padding:4px 8px;border-radius:4px">{{ devCountLabel }}</span>
+        </div>
+      </div>
+
+      <sc-if value="{{ onCapture }}" hint-placeholder-val="{{ true }}">
+      <div style="display:flex;flex-direction:column;flex:1;min-height:0">
+        <div style="position:relative;flex:1;min-height:0;background:#0B0C0F;overflow:hidden;touch-action:none;border-top:2px solid rgba(43,40,32,0.4)">
+          <div style="position:absolute;inset:0;background:radial-gradient(120% 90% at 50% 8%,rgba(140,150,170,0.10),transparent 60%)"></div>
+          <div style="position:absolute;left:24px;top:36px;width:220px;height:134px;background:#232527;border-radius:10px;padding:13px;box-shadow:0 14px 34px rgba(0,0,0,0.55)">
+            <div style="font:600 8px ui-monospace,Menlo,monospace;color:#84878b;letter-spacing:1.2px;margin-bottom:6px">FLUKE 87V · TRUE RMS</div>
+            <div style="background:#adb8a0;border-radius:4px;height:62px;display:flex;align-items:baseline;justify-content:flex-end;gap:7px;padding:12px 14px">
+              <span style="font:600 28px ui-monospace,Menlo,monospace;color:#222818;letter-spacing:2px">{{ d1.meterStr }}</span>
+              <span style="font:600 14px ui-monospace,Menlo,monospace;color:#222818">{{ d1.unit }}</span>
+            </div>
+            <div style="display:flex;gap:10px;margin-top:9px;align-items:center;justify-content:center">
+              <div style="width:22px;height:22px;border-radius:50%;background:#2e3134;border:3px solid #45484c"></div>
+              <div style="width:18px;height:8px;border-radius:4px;background:#3a3d41"></div>
+              <div style="width:18px;height:8px;border-radius:4px;background:#3a3d41"></div>
+              <div style="width:18px;height:8px;border-radius:4px;background:#3a3d41"></div>
+            </div>
+          </div>
+          <sc-if value="{{ showTwo }}" hint-placeholder-val="{{ true }}">
+          <div style="position:absolute;left:150px;top:250px;width:220px;height:126px;background:#1d1f21;border-radius:10px;padding:13px;box-shadow:0 14px 34px rgba(0,0,0,0.55)">
+            <div style="font:600 8px ui-monospace,Menlo,monospace;color:#7c7f83;letter-spacing:1.2px;margin-bottom:6px">KEYSIGHT U1282A</div>
+            <div style="background:#12211a;border-radius:4px;height:58px;display:flex;align-items:baseline;justify-content:flex-end;gap:7px;padding:11px 14px">
+              <span style="font:600 26px ui-monospace,Menlo,monospace;color:#6fe0a0;letter-spacing:2px">{{ d2.meterStr }}</span>
+              <span style="font:600 13px ui-monospace,Menlo,monospace;color:#6fe0a0">{{ d2.unit }}</span>
+            </div>
+            <div style="display:flex;gap:10px;margin-top:9px;align-items:center;justify-content:center">
+              <div style="width:14px;height:14px;border-radius:50%;background:#34373a"></div>
+              <div style="width:14px;height:14px;border-radius:50%;background:#34373a"></div>
+              <div style="width:14px;height:14px;border-radius:50%;background:#34373a"></div>
+              <div style="width:22px;height:8px;border-radius:4px;background:#34373a"></div>
+            </div>
+          </div>
+          </sc-if>
+          <div onPointerDown="{{ d1.drag }}" style="position:absolute;left:{{ d1.rx }}px;top:{{ d1.ry }}px;width:{{ d1.rw }}px;height:{{ d1.rh }}px;border:2px {{ d1.dash }} {{ d1.bcol }};border-radius:6px;box-shadow:{{ d1.glow }};cursor:grab;touch-action:none">
+            <div style="position:absolute;left:-2px;top:-24px;background:{{ d1.bcol }};color:{{ d1.labFg }};padding:3px 8px;font:800 10px 'Archivo',sans-serif;border-radius:4px;white-space:nowrap">{{ d1.labTxt }}</div>
+            <b style="position:absolute;left:-5px;top:-5px;width:8px;height:8px;border-radius:2px;background:{{ d1.bcol }}"></b>
+            <b style="position:absolute;right:-5px;top:-5px;width:8px;height:8px;border-radius:2px;background:{{ d1.bcol }}"></b>
+            <b style="position:absolute;left:-5px;bottom:-5px;width:8px;height:8px;border-radius:2px;background:{{ d1.bcol }}"></b>
+            <b style="position:absolute;right:-5px;bottom:-5px;width:8px;height:8px;border-radius:2px;background:{{ d1.bcol }}"></b>
+          </div>
+          <sc-if value="{{ showTwo }}" hint-placeholder-val="{{ true }}">
+          <div onPointerDown="{{ d2.drag }}" style="position:absolute;left:{{ d2.rx }}px;top:{{ d2.ry }}px;width:{{ d2.rw }}px;height:{{ d2.rh }}px;border:2px {{ d2.dash }} {{ d2.bcol }};border-radius:6px;box-shadow:{{ d2.glow }};cursor:grab;touch-action:none">
+            <div style="position:absolute;left:-2px;top:-24px;background:{{ d2.bcol }};color:{{ d2.labFg }};padding:3px 8px;font:800 10px 'Archivo',sans-serif;border-radius:4px;white-space:nowrap">{{ d2.labTxt }}</div>
+            <b style="position:absolute;left:-5px;top:-5px;width:8px;height:8px;border-radius:2px;background:{{ d2.bcol }}"></b>
+            <b style="position:absolute;right:-5px;top:-5px;width:8px;height:8px;border-radius:2px;background:{{ d2.bcol }}"></b>
+            <b style="position:absolute;left:-5px;bottom:-5px;width:8px;height:8px;border-radius:2px;background:{{ d2.bcol }}"></b>
+            <b style="position:absolute;right:-5px;bottom:-5px;width:8px;height:8px;border-radius:2px;background:{{ d2.bcol }}"></b>
+          </div>
+          </sc-if>
+          <div style="position:absolute;left:0;right:0;bottom:10px;text-align:center;font:600 9px 'Archivo',sans-serif;letter-spacing:0.12em;color:rgba(255,255,255,0.45);pointer-events:none">DRAG A WINDOW ONTO A DISPLAY TO LOCK OCR</div>
+        </div>
+
+        <sc-if value="{{ recording }}" hint-placeholder-val="{{ false }}">
+        <div style="background:#2B2820;color:#F7E9BC;padding:8px 16px;display:flex;flex-direction:column;gap:5px">
+          <div style="display:flex;align-items:center;gap:10px;font:600 10px ui-monospace,Menlo,monospace">
+            <span style="display:flex;align-items:center;gap:5px;color:#FF6B4A"><b style="width:8px;height:8px;border-radius:50%;background:#FF6B4A;animation:recpulse 1s infinite"></b>REC</span>
+            <span>{{ elapsed }}</span>
+            <span style="color:rgba(247,233,188,0.6)">{{ nStr }} samples</span>
+            <span style="color:#FF9D80">{{ rejStr }} rejected</span>
+            <sc-if value="{{ showRejFlash }}" hint-placeholder-val="{{ false }}">
+              <span style="margin-left:auto;background:#8A2A12;color:#fff;padding:2px 7px;border-radius:3px;font:800 9px 'Archivo',sans-serif">✕ REJECTED — FORMAT MISMATCH</span>
+            </sc-if>
+          </div>
+          <svg width="360" height="34" style="display:block">
+            <polyline points="{{ spark1 }}" fill="none" stroke="#FFC20E" stroke-width="1.5"></polyline>
+            <polyline points="{{ spark2 }}" fill="none" stroke="#E5DFC9" stroke-width="1.2" opacity="0.75"></polyline>
+          </svg>
+        </div>
+        </sc-if>
+
+        <div style="background:#F7E9BC;border-top:2px solid rgba(43,40,32,0.4);padding:11px 16px 8px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+            <span style="font:800 10px 'Archivo',sans-serif;letter-spacing:0.1em">LIVE READINGS</span>
+            <span style="font:400 10px 'Archivo',sans-serif;color:rgba(43,40,32,0.55)">Apple Vision OCR · constrained</span>
+          </div>
+          <div style="display:grid;grid-template-columns:{{ gridCols }};gap:10px">
+            <div style="background:#FDF6DE;border:1px solid rgba(43,40,32,0.2);border-radius:8px;padding:9px 11px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+                <span style="font:800 9px 'Archivo',sans-serif;letter-spacing:0.08em;color:rgba(43,40,32,0.55);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ d1.sub }}</span>
+                <span onClick="{{ d1.openSheet }}" style="font:600 10px 'Archivo',sans-serif;border:1px solid rgba(43,40,32,0.3);border-radius:4px;padding:1px 6px;cursor:pointer;white-space:nowrap;flex-shrink:0">⚙ {{ d1.pattern }}</span>
+              </div>
+              <div style="display:flex;align-items:baseline;gap:4px"><span style="font:600 24px ui-monospace,Menlo,monospace">{{ d1.valStr }}</span><span style="font:800 12px 'Archivo',sans-serif">{{ d1.unit }}</span></div>
+              <div style="display:flex;align-items:center;gap:6px;margin-top:6px">
+                <div style="flex:1;height:3px;background:rgba(43,40,32,0.15);border-radius:2px;overflow:hidden"><div style="width:{{ d1.confW }}%;height:100%;background:#F5B700"></div></div>
+                <span style="font:600 9px 'Archivo',sans-serif">{{ d1.confTxt }}</span>
+                <span style="font:800 8px 'Archivo',sans-serif;background:{{ d1.stBg }};color:{{ d1.stFg }};padding:2px 5px;border-radius:3px">{{ d1.stTxt }}</span>
+              </div>
+            </div>
+            <sc-if value="{{ showTwo }}" hint-placeholder-val="{{ true }}">
+            <div style="background:#FDF6DE;border:1px solid rgba(43,40,32,0.2);border-radius:8px;padding:9px 11px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+                <span style="font:800 9px 'Archivo',sans-serif;letter-spacing:0.08em;color:rgba(43,40,32,0.55);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ d2.sub }}</span>
+                <span onClick="{{ d2.openSheet }}" style="font:600 10px 'Archivo',sans-serif;border:1px solid rgba(43,40,32,0.3);border-radius:4px;padding:1px 6px;cursor:pointer;white-space:nowrap;flex-shrink:0">⚙ {{ d2.pattern }}</span>
+              </div>
+              <div style="display:flex;align-items:baseline;gap:4px"><span style="font:600 24px ui-monospace,Menlo,monospace">{{ d2.valStr }}</span><span style="font:800 12px 'Archivo',sans-serif">{{ d2.unit }}</span></div>
+              <div style="display:flex;align-items:center;gap:6px;margin-top:6px">
+                <div style="flex:1;height:3px;background:rgba(43,40,32,0.15);border-radius:2px;overflow:hidden"><div style="width:{{ d2.confW }}%;height:100%;background:#F5B700"></div></div>
+                <span style="font:600 9px 'Archivo',sans-serif">{{ d2.confTxt }}</span>
+                <span style="font:800 8px 'Archivo',sans-serif;background:{{ d2.stBg }};color:{{ d2.stFg }};padding:2px 5px;border-radius:3px">{{ d2.stTxt }}</span>
+              </div>
+            </div>
+            </sc-if>
+          </div>
+        </div>
+        <div style="background:#F7E9BC;padding:8px 16px 34px;display:flex;align-items:center;justify-content:space-between;gap:10px">
+          <div style="font:600 12px ui-monospace,Menlo,monospace;border:1px solid rgba(43,40,32,0.3);border-radius:5px;padding:8px 10px;min-width:64px;text-align:center">{{ elapsed }}</div>
+          <div onClick="{{ toggleRec }}" style="background:{{ recBg }};color:#fff;padding:12px 30px;display:flex;align-items:center;gap:8px;font:800 13px 'Archivo',sans-serif;letter-spacing:0.05em;border-radius:8px;cursor:pointer;user-select:none">{{ recLabel }}</div>
+          <div style="text-align:right">
+            <div style="font:600 9px 'Archivo',sans-serif;color:rgba(43,40,32,0.55)">CAM 240 FPS</div>
+            <div style="font:600 9px 'Archivo',sans-serif;color:rgba(43,40,32,0.55)">OCR 30/S</div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ onResults }}" hint-placeholder-val="{{ false }}">
+      <div style="flex:1;min-height:0;overflow:auto;background:#FAF6EA;border-top:2px solid rgba(43,40,32,0.4);padding:12px 16px 40px;display:flex;flex-direction:column;gap:11px">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <span onClick="{{ backToCapture }}" style="font:600 12px 'Archivo',sans-serif;color:#8a6b00;cursor:pointer">‹ Camera</span>
+          <span style="font:800 13px 'Archivo',sans-serif;letter-spacing:0.04em">SESSION RESULTS</span>
+          <span style="font:600 10px 'Archivo',sans-serif;background:#2B2820;color:#FFC20E;padding:3px 8px;border-radius:4px">{{ res.n }} rows</span>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <span style="font:600 10px 'Archivo',sans-serif;background:#fff;border:1px solid rgba(43,40,32,0.18);border-radius:5px;padding:4px 8px">⏱ {{ res.dur }}</span>
+          <span style="font:600 10px 'Archivo',sans-serif;background:#fff;border:1px solid rgba(43,40,32,0.18);border-radius:5px;padding:4px 8px">{{ res.rate }} samples/s</span>
+          <span style="font:600 10px 'Archivo',sans-serif;background:#EAF3E2;color:#3D5B27;border:1px solid rgba(61,91,39,0.25);border-radius:5px;padding:4px 8px">✓ {{ res.acc }} accepted</span>
+          <span style="font:600 10px 'Archivo',sans-serif;background:#FDEBE7;color:#8A2A12;border:1px solid rgba(138,42,18,0.25);border-radius:5px;padding:4px 8px">✕ {{ res.rej }} rejected</span>
+        </div>
+        <div style="background:#fff;border:1px solid rgba(43,40,32,0.18);border-radius:10px;padding:12px 12px 8px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+            <span style="font:800 9px 'Archivo',sans-serif;letter-spacing:0.1em;color:rgba(43,40,32,0.55)">MEASUREMENT vs TIME</span>
+            <span style="display:flex;gap:10px;font:600 9px 'Archivo',sans-serif;white-space:nowrap;flex-shrink:0"><i style="color:#B78600;font-style:normal;white-space:nowrap">— DMM-1 ({{ d1.unit }})</i><i style="color:#3A3730;font-style:normal;white-space:nowrap">— DMM-2 ({{ d2.unit }})</i></span>
+          </div>
+          <svg width="330" height="140" style="display:block">
+            <line x1="0" y1="35" x2="330" y2="35" stroke="rgba(43,40,32,0.1)"></line>
+            <line x1="0" y1="70" x2="330" y2="70" stroke="rgba(43,40,32,0.1)"></line>
+            <line x1="0" y1="105" x2="330" y2="105" stroke="rgba(43,40,32,0.1)"></line>
+            <polyline points="{{ res.poly1 }}" fill="none" stroke="#E8A400" stroke-width="2"></polyline>
+            <polyline points="{{ res.poly2 }}" fill="none" stroke="#3A3730" stroke-width="1.6"></polyline>
+          </svg>
+          <div style="display:flex;justify-content:space-between;font:500 9px ui-monospace,Menlo,monospace;color:rgba(43,40,32,0.5)"><span>0.00s</span><span>{{ res.dur }}</span></div>
+        </div>
+        <div style="display:grid;grid-template-columns:{{ gridCols }};gap:10px">
+          <div style="background:#fff;border:1px solid rgba(43,40,32,0.18);border-radius:10px;padding:10px 12px">
+            <div style="font:800 9px 'Archivo',sans-serif;letter-spacing:0.08em;color:rgba(43,40,32,0.55);margin-bottom:5px">DMM-1 · {{ d1.unit }} DC</div>
+            <div style="display:flex;flex-direction:column;gap:3px;font:600 11px ui-monospace,Menlo,monospace">
+              <span>min {{ res.s1.min }}</span><span>mean {{ res.s1.mean }}</span><span>max {{ res.s1.max }}</span>
+            </div>
+          </div>
+          <sc-if value="{{ showTwo }}" hint-placeholder-val="{{ true }}">
+          <div style="background:#fff;border:1px solid rgba(43,40,32,0.18);border-radius:10px;padding:10px 12px">
+            <div style="font:800 9px 'Archivo',sans-serif;letter-spacing:0.08em;color:rgba(43,40,32,0.55);margin-bottom:5px">DMM-2 · {{ d2.unit }} DC</div>
+            <div style="display:flex;flex-direction:column;gap:3px;font:600 11px ui-monospace,Menlo,monospace">
+              <span>min {{ res.s2.min }}</span><span>mean {{ res.s2.mean }}</span><span>max {{ res.s2.max }}</span>
+            </div>
+          </div>
+          </sc-if>
+        </div>
+        <div style="background:#fff;border:1px solid rgba(43,40,32,0.18);border-radius:10px;overflow:hidden">
+          <div style="display:grid;grid-template-columns:52px 1fr 40px 1fr 40px;gap:6px;padding:7px 12px;background:#F3EBD2;font:800 8px 'Archivo',sans-serif;letter-spacing:0.06em;color:rgba(43,40,32,0.6)">
+            <span>TIME</span><span>DMM-1 ({{ d1.unit }})</span><span>CONF</span><span>DMM-2 ({{ d2.unit }})</span><span>CONF</span>
+          </div>
+          <sc-for list="{{ res.rows }}" as="r" hint-placeholder-count="6">
+            <div style="display:grid;grid-template-columns:52px 1fr 40px 1fr 40px;gap:6px;padding:5px 12px;font:500 10px ui-monospace,Menlo,monospace;background:{{ r.bg }};border-top:1px solid rgba(43,40,32,0.07)">
+              <span>{{ r.t }}</span><span>{{ r.v1 }}</span><span>{{ r.c1 }}</span><span>{{ r.v2 }}</span><span>{{ r.c2 }}</span>
+            </div>
+          </sc-for>
+          <div style="padding:6px 12px;font:500 9px 'Archivo',sans-serif;color:rgba(43,40,32,0.5)">{{ res.more }}</div>
+        </div>
+        <div style="display:flex;gap:10px">
+          <div onClick="{{ exportCsv }}" style="flex:1;background:#FFC20E;color:#2B2820;text-align:center;padding:12px;font:800 12px 'Archivo',sans-serif;letter-spacing:0.05em;border-radius:8px;cursor:pointer">⬇ EXPORT CSV</div>
+          <div onClick="{{ newSession }}" style="flex:1;border:1.5px solid rgba(43,40,32,0.4);text-align:center;padding:12px;font:800 12px 'Archivo',sans-serif;letter-spacing:0.05em;border-radius:8px;cursor:pointer">NEW SESSION</div>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ sheetOpen }}" hint-placeholder-val="{{ false }}">
+      <div onClick="{{ sheet.close }}" style="position:absolute;inset:0;background:rgba(24,21,12,0.45);display:flex;align-items:flex-end;z-index:20">
+        <div onClick="{{ eatClick }}" style="width:100%;background:#F7E9BC;border-radius:18px 18px 0 0;padding:16px 18px 36px;display:flex;flex-direction:column;gap:12px;box-shadow:0 -12px 40px rgba(0,0,0,0.35)">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <div style="font:800 13px 'Archivo',sans-serif">{{ sheet.title }}</div>
+              <div style="font:500 10px 'Archivo',sans-serif;color:rgba(43,40,32,0.55)">{{ sheet.model }} · Mode 2 — user-configured format</div>
+            </div>
+            <span onClick="{{ sheet.close }}" style="font:600 14px 'Archivo',sans-serif;border:1px solid rgba(43,40,32,0.3);border-radius:6px;padding:2px 9px;cursor:pointer">✕</span>
+          </div>
+          <div style="background:#2B2820;border-radius:8px;padding:10px 14px;text-align:center">
+            <span style="font:600 22px ui-monospace,Menlo,monospace;color:#FFC20E;letter-spacing:3px">{{ sheet.pattern }} {{ sheet.unit }}</span>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <span style="font:800 10px 'Archivo',sans-serif;letter-spacing:0.08em">DIGITS</span>
+            <div style="display:flex;gap:6px">
+              <sc-for list="{{ sheet.digitOpts }}" as="o" hint-placeholder-count="3">
+                <span onClick="{{ o.pick }}" style="font:800 11px 'Archivo',sans-serif;padding:5px 12px;border-radius:5px;border:1px solid rgba(43,40,32,0.35);background:{{ o.bg }};color:{{ o.fg }};cursor:pointer">{{ o.label }}</span>
+              </sc-for>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <span style="font:800 10px 'Archivo',sans-serif;letter-spacing:0.08em">DECIMAL AFTER DIGIT</span>
+            <div style="display:flex;align-items:center;gap:10px">
+              <span onClick="{{ sheet.decDown }}" style="font:800 14px 'Archivo',sans-serif;border:1px solid rgba(43,40,32,0.35);border-radius:5px;padding:2px 10px;cursor:pointer">−</span>
+              <span style="font:600 14px ui-monospace,Menlo,monospace;min-width:16px;text-align:center">{{ sheet.dec }}</span>
+              <span onClick="{{ sheet.decUp }}" style="font:800 14px 'Archivo',sans-serif;border:1px solid rgba(43,40,32,0.35);border-radius:5px;padding:2px 10px;cursor:pointer">+</span>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <span style="font:800 10px 'Archivo',sans-serif;letter-spacing:0.08em">SIGN (±)</span>
+            <span onClick="{{ sheet.toggleSign }}" style="font:800 10px 'Archivo',sans-serif;padding:5px 14px;border-radius:5px;border:1px solid rgba(43,40,32,0.35);background:{{ sheet.signBg }};color:{{ sheet.signFg }};cursor:pointer">{{ sheet.signTxt }}</span>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <span style="font:800 10px 'Archivo',sans-serif;letter-spacing:0.08em">UNIT</span>
+            <div style="display:flex;gap:6px">
+              <sc-for list="{{ sheet.units }}" as="u" hint-placeholder-count="5">
+                <span onClick="{{ u.pick }}" style="font:800 11px 'Archivo',sans-serif;padding:5px 10px;border-radius:5px;border:1px solid rgba(43,40,32,0.35);background:{{ u.bg }};color:{{ u.fg }};cursor:pointer">{{ u.label }}</span>
+              </sc-for>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <span style="font:800 10px 'Archivo',sans-serif;letter-spacing:0.08em">VALID RANGE</span>
+            <div style="display:flex;align-items:center;gap:8px;font:600 12px ui-monospace,Menlo,monospace">
+              <span onClick="{{ sheet.minDown }}" style="font:800 12px 'Archivo',sans-serif;border:1px solid rgba(43,40,32,0.35);border-radius:5px;padding:1px 8px;cursor:pointer">−</span>
+              <span>{{ sheet.minStr }}</span>
+              <span onClick="{{ sheet.minUp }}" style="font:800 12px 'Archivo',sans-serif;border:1px solid rgba(43,40,32,0.35);border-radius:5px;padding:1px 8px;cursor:pointer">+</span>
+              <span style="color:rgba(43,40,32,0.45)">to</span>
+              <span onClick="{{ sheet.maxDown }}" style="font:800 12px 'Archivo',sans-serif;border:1px solid rgba(43,40,32,0.35);border-radius:5px;padding:1px 8px;cursor:pointer">−</span>
+              <span>{{ sheet.maxStr }}</span>
+              <span onClick="{{ sheet.maxUp }}" style="font:800 12px 'Archivo',sans-serif;border:1px solid rgba(43,40,32,0.35);border-radius:5px;padding:1px 8px;cursor:pointer">+</span>
+            </div>
+          </div>
+          <div onClick="{{ sheet.close }}" style="background:#FFC20E;color:#2B2820;text-align:center;padding:12px;font:800 12px 'Archivo',sans-serif;letter-spacing:0.05em;border-radius:8px;cursor:pointer;margin-top:2px">DONE — RESUME CONSTRAINED OCR</div>
+        </div>
+      </div>
+      </sc-if>
+    </div>
+  </x-import>
+  <div style="font:400 11px 'Archivo',sans-serif;color:#8b8d92;max-width:560px;text-align:center">Engineering handoff package: <a href="design_handoff_daqpal_ios/README.md">design_handoff_daqpal_ios/README.md</a></div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:760,&quot;height&quot;:1160},&quot;showSecondDevice&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Simulation&quot;},&quot;rejectionRate&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:0.04,&quot;min&quot;:0,&quot;max&quot;:0.2,&quot;step&quot;:0.01,&quot;unit&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Simulation&quot;}}">
+class Component extends DCLogic {
+  state = {
+    screen: 'capture', recording: false, sheetFor: null, t: 0, samples: [], lastRejectT: -10,
+    devices: [
+      { id: 'DMM-1', model: 'Fluke 87V', unit: 'V', digits: 5, dec: 2, sign: true, min: -20, max: 20, roi: { x: 31, y: 62, w: 206, h: 76 }, base: 12.347 },
+      { id: 'DMM-2', model: 'Keysight U1282A', unit: 'A', digits: 5, dec: 2, sign: false, min: 0, max: 10, roi: { x: 157, y: 274, w: 206, h: 72 }, base: 3.998 }
+    ],
+    live: [{ v: 12.347, c: 0.998, lk: true }, { v: 3.998, c: 0.972, lk: true }]
+  };
+  dispRects = [{ x: 37, y: 69, w: 194, h: 62 }, { x: 163, y: 283, w: 194, h: 58 }];
+  componentDidMount() { this.simT = 0; this.timer = setInterval(() => this.tick(), 120); }
+  componentWillUnmount() { clearInterval(this.timer); }
+  locked(i) {
+    const r = this.state.devices[i].roi, d = this.dispRects[i];
+    const ix = Math.max(0, Math.min(r.x + r.w, d.x + d.w) - Math.max(r.x, d.x));
+    const iy = Math.max(0, Math.min(r.y + r.h, d.y + d.h) - Math.max(r.y, d.y));
+    return (ix * iy) / (d.w * d.h) > 0.6;
+  }
+  tick() {
+    this.simT += 0.12;
+    const s = this.state, rej = this.props.rejectionRate ?? 0.04;
+    const live = s.devices.map((d, i) => {
+      const lk = this.locked(i);
+      const v = i === 0
+        ? d.base + 0.004 * Math.sin(this.simT / 1.7) + (Math.random() - 0.5) * 0.004
+        : d.base + 0.09 * Math.sin(this.simT / 4.2) + (Math.random() - 0.5) * 0.006;
+      return { v, c: lk ? 0.965 + Math.random() * 0.034 : 0, lk };
+    });
+    const upd = { live };
+    if (s.recording) {
+      const t = +(s.t + 0.12).toFixed(3);
+      const bad = Math.random() < rej;
+      upd.t = t;
+      upd.samples = s.samples.concat([{ t, d: live.map(l => ({ v: +l.v.toFixed(3), c: +l.c.toFixed(3), ok: l.lk && !bad })) }]).slice(-2000);
+      if (bad) upd.lastRejectT = t;
+    }
+    this.setState(upd);
+  }
+  fmt(d, v) {
+    const decs = Math.max(0, d.digits - d.dec);
+    const parts = Math.abs(v).toFixed(decs).split('.');
+    return (v < 0 ? '-' : '') + parts[0].padStart(d.dec, '0') + (parts[1] ? '.' + parts[1] : '');
+  }
+  pattern(d) { return (d.sign ? '±' : '') + 'X'.repeat(d.dec) + '.' + 'X'.repeat(d.digits - d.dec); }
+  fmtT(t) { const m = Math.floor(t / 60), sec = (t % 60).toFixed(1).padStart(4, '0'); return String(m).padStart(2, '0') + ':' + sec; }
+  editDev(i, patch) { this.setState(st => { const devices = st.devices.slice(); devices[i] = { ...devices[i], ...patch }; return { devices }; }); }
+  makeDrag(i) {
+    return (e) => {
+      e.preventDefault();
+      const el = e.currentTarget; el.setPointerCapture(e.pointerId);
+      const sx = e.clientX, sy = e.clientY, o = { ...this.state.devices[i].roi };
+      const move = (ev) => {
+        const nx = Math.max(4, Math.min(398 - o.w, o.x + ev.clientX - sx));
+        const ny = Math.max(30, Math.min(380, o.y + ev.clientY - sy));
+        this.editDev(i, { roi: { ...o, x: nx, y: ny } });
+      };
+      el.addEventListener('pointermove', move);
+      el.addEventListener('pointerup', () => el.removeEventListener('pointermove', move), { once: true });
+    };
+  }
+  poly(vals, w, h, pad) {
+    if (vals.length < 2) return '';
+    let mn = Math.min(...vals), mx = Math.max(...vals);
+    if (mx - mn < 1e-6) { mn -= 0.01; mx += 0.01; }
+    return vals.map((v, i) => (i / (vals.length - 1) * w).toFixed(1) + ',' + (h - pad - (v - mn) / (mx - mn) * (h - 2 * pad)).toFixed(1)).join(' ');
+  }
+  stats(i) {
+    const vals = this.state.samples.filter(x => x.d[i].ok).map(x => x.d[i].v);
+    if (!vals.length) return { min: '—', mean: '—', max: '—' };
+    return {
+      min: Math.min(...vals).toFixed(3),
+      mean: (vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(3),
+      max: Math.max(...vals).toFixed(3)
+    };
+  }
+  exportCsv() {
+    const showTwo = this.props.showSecondDevice ?? true;
+    const ds = this.state.devices;
+    let head = ['timestamp_s', 'dmm1_value_' + ds[0].unit, 'dmm1_confidence', 'dmm1_valid'];
+    if (showTwo) head = head.concat(['dmm2_value_' + ds[1].unit, 'dmm2_confidence', 'dmm2_valid']);
+    const lines = [head.join(',')].concat(this.state.samples.map(x => {
+      let row = [x.t.toFixed(3), x.d[0].v.toFixed(3), x.d[0].c.toFixed(3), x.d[0].ok ? 1 : 0];
+      if (showTwo) row = row.concat([x.d[1].v.toFixed(3), x.d[1].c.toFixed(3), x.d[1].ok ? 1 : 0]);
+      return row.join(',');
+    }));
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = 'daqpal_session.csv'; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  }
+  renderVals() {
+    const s = this.state, showTwo = this.props.showSecondDevice ?? true;
+    const dv = s.devices.map((d, i) => {
+      const lv = s.live[i], lk = lv.lk;
+      return {
+        id: d.id, unit: d.unit, sub: d.id + ' · ' + d.unit + ' DC', model: d.model,
+        rx: d.roi.x, ry: d.roi.y, rw: d.roi.w, rh: d.roi.h,
+        bcol: lk ? '#FFC20E' : '#FF6B4A', dash: lk ? 'solid' : 'dashed',
+        glow: lk ? '0 0 14px rgba(255,194,14,0.4)' : 'none',
+        labFg: lk ? '#2B2820' : '#fff',
+        labTxt: '⠿ ' + d.id + (lk ? ' · ' + (lv.c * 100).toFixed(1) + '%' : ' · SEARCHING'),
+        meterStr: this.fmt(d, lv.v),
+        valStr: lk ? this.fmt(d, lv.v) : '—.———',
+        confW: Math.round(lv.c * 100), confTxt: (lv.c * 100).toFixed(1) + '%',
+        stTxt: lk ? 'LOCKED' : 'SEARCHING', stBg: lk ? '#FFE9A8' : '#FFD9CE', stFg: lk ? '#6B4E00' : '#8A2A12',
+        pattern: this.pattern(d),
+        drag: this.makeDrag(i),
+        openSheet: () => this.setState({ sheetFor: i })
+      };
+    });
+    const n = s.samples.length;
+    const rejN = s.samples.filter(x => x.d.some((p, i) => (i === 0 || showTwo) && !p.ok)).length;
+    const sparkVals = i => s.samples.slice(-80).map(x => x.d[i].v);
+    const res = {
+      n, dur: this.fmtT(s.t), rate: s.t > 0 ? (n / s.t).toFixed(1) : '0',
+      acc: n - rejN, rej: rejN,
+      poly1: this.poly(s.samples.map(x => x.d[0].v), 330, 140, 8),
+      poly2: showTwo ? this.poly(s.samples.map(x => x.d[1].v), 330, 140, 8) : '',
+      s1: this.stats(0), s2: this.stats(1),
+      rows: s.samples.slice(-8).map(x => {
+        const bad = x.d.some((p, i) => (i === 0 || showTwo) && !p.ok);
+        return {
+          t: x.t.toFixed(2), bg: bad ? '#FDEBE7' : 'transparent',
+          v1: x.d[0].ok ? x.d[0].v.toFixed(3) : '✕ rej', c1: x.d[0].c.toFixed(2),
+          v2: showTwo ? (x.d[1].ok ? x.d[1].v.toFixed(3) : '✕ rej') : '—',
+          c2: showTwo ? x.d[1].c.toFixed(2) : '—'
+        };
+      }),
+      more: n > 8 ? '+ ' + (n - 8) + ' earlier rows — full data in CSV' : 'Full data in CSV'
+    };
+    let sheet = { close: () => {} };
+    if (s.sheetFor != null) {
+      const i = s.sheetFor, d = s.devices[i];
+      const upd = p => this.editDev(i, p);
+      sheet = {
+        title: 'Display format — ' + d.id, model: d.model, unit: d.unit,
+        pattern: this.pattern(d), dec: d.dec,
+        digitOpts: [4, 5, 6].map(k => ({ label: String(k), bg: d.digits === k ? '#2B2820' : 'transparent', fg: d.digits === k ? '#FFC20E' : '#2B2820', pick: () => upd({ digits: k, dec: Math.min(d.dec, k - 1) }) })),
+        decDown: () => upd({ dec: Math.max(1, d.dec - 1) }),
+        decUp: () => upd({ dec: Math.min(d.digits - 1, d.dec + 1) }),
+        signTxt: d.sign ? 'ALLOWED' : 'OFF', signBg: d.sign ? '#2B2820' : 'transparent', signFg: d.sign ? '#FFC20E' : '#2B2820',
+        toggleSign: () => upd({ sign: !d.sign }),
+        units: ['V', 'A', 'Ω', '°C', 'Hz'].map(u => ({ label: u, bg: d.unit === u ? '#2B2820' : 'transparent', fg: d.unit === u ? '#FFC20E' : '#2B2820', pick: () => upd({ unit: u }) })),
+        minStr: d.min + ' ' + d.unit, maxStr: d.max + ' ' + d.unit,
+        minDown: () => upd({ min: d.min - 5 }), minUp: () => upd({ min: Math.min(d.max - 5, d.min + 5) }),
+        maxDown: () => upd({ max: Math.max(d.min + 5, d.max - 5) }), maxUp: () => upd({ max: d.max + 5 }),
+        close: () => this.setState({ sheetFor: null })
+      };
+    }
+    return {
+      onCapture: s.screen === 'capture', onResults: s.screen === 'results',
+      sheetOpen: s.sheetFor != null, showTwo,
+      d1: dv[0], d2: dv[1],
+      recording: s.recording,
+      recLabel: s.recording ? '■ STOP' : '● REC',
+      recBg: s.recording ? '#B02318' : '#D0342C',
+      elapsed: this.fmtT(s.t),
+      nStr: String(n), rejStr: String(rejN),
+      showRejFlash: s.recording && s.t - s.lastRejectT < 1.2,
+      spark1: this.poly(sparkVals(0), 360, 34, 4),
+      spark2: showTwo ? this.poly(sparkVals(1), 360, 34, 4) : '',
+      gridCols: showTwo ? '1fr 1fr' : '1fr',
+      devCountLabel: (showTwo ? '2' : '1') + ' DEVICES',
+      toggleRec: () => {
+        if (this.state.recording) this.setState({ recording: false, screen: 'results' });
+        else this.setState({ recording: true, samples: [], t: 0, lastRejectT: -10, screen: 'capture' });
+      },
+      backToCapture: () => this.setState({ screen: 'capture' }),
+      newSession: () => this.setState({ screen: 'capture', samples: [], t: 0 }),
+      exportCsv: () => this.exportCsv(),
+      eatClick: (e) => e.stopPropagation(),
+      res, sheet
+    };
+  }
+}
+</script>
+</body>
+</html>
