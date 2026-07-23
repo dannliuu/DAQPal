@@ -182,4 +182,71 @@ final class FormatValidatorTests: XCTestCase {
         XCTAssertEqual(validator.parse("12.347", format: signed),
                        FormatValidator.parse("12.347", format: signed))
     }
+
+    // MARK: - Lenient numeric extraction (spec Mode 3 — unknown format)
+
+    /// A dimensionless, unconstrained format like a freshly added device.
+    private let lenient = DisplayFormat(digitCount: 5, decimalPosition: 2,
+                                        signAllowed: true, unit: nil,
+                                        minimumValue: nil, maximumValue: nil,
+                                        constrainToFormat: false)
+
+    func testExtract_ignoresSurroundingText() {
+        let result = FormatValidator.extractNumber(from: "AUTO 12.3 mV")
+        XCTAssertEqual(result?.value, 12.3)
+        XCTAssertEqual(result?.matched, "12.3")
+    }
+
+    func testExtract_leadingSignAndBareDecimal() {
+        let result = FormatValidator.extractNumber(from: "-.5")
+        XCTAssertEqual(result?.value, -0.5)
+        XCTAssertEqual(result?.matched, "-.5")
+    }
+
+    func testExtract_picksTokenWithMostDigits() {
+        // "12.34.7" tokenizes into "12.34" (4 digits) and ".7" (1 digit);
+        // lenient mode tolerates the trailing junk and takes the richest token.
+        let result = FormatValidator.extractNumber(from: "12.34.7")
+        XCTAssertEqual(result?.value, 12.34)
+        XCTAssertEqual(result?.matched, "12.34")
+    }
+
+    func testExtract_noDigitsReturnsNil() {
+        XCTAssertNil(FormatValidator.extractNumber(from: "HOLD"))
+    }
+
+    func testExtract_appliesConfusableNormalizationBeforeTokenizing() {
+        // l->1 and O->0 run before the numeric scan, so "l2.3O" -> "12.30".
+        let result = FormatValidator.extractNumber(from: "l2.3O")
+        XCTAssertEqual(result?.value, 12.30)
+        XCTAssertEqual(result?.matched, "12.30")
+    }
+
+    // MARK: - value(from:format:) dispatch on constrainToFormat
+
+    func testDispatch_constrainedStaysStrict() {
+        // The trailing junk lenient mode tolerates must still be rejected under
+        // the strict grammar when the format is constrained.
+        guard case .invalid = FormatValidator.value(from: "12.34.7", format: signed) else {
+            return XCTFail("constrained dispatch must reject via the strict grammar")
+        }
+        XCTAssertEqual(FormatValidator.value(from: "12.347", format: signed), .valid(12.347))
+    }
+
+    func testDispatch_unconstrainedUsesLenientExtraction() {
+        XCTAssertEqual(FormatValidator.value(from: "AUTO 12.3 mV", format: lenient), .valid(12.3))
+        // Trailing junk tolerated: best token of "12.34.7" is "12.34".
+        XCTAssertEqual(FormatValidator.value(from: "12.34.7", format: lenient), .valid(12.34))
+    }
+
+    func testDispatch_unconstrainedNoDigitsIsInvalidFormat() {
+        XCTAssertEqual(FormatValidator.value(from: "HOLD", format: .unconstrained),
+                       .invalid(.invalidFormat))
+    }
+
+    func testDispatch_instanceForwardsToStatic() {
+        let validator = FormatValidator()
+        XCTAssertEqual(validator.value(from: "AUTO 12.3", format: lenient),
+                       FormatValidator.value(from: "AUTO 12.3", format: lenient))
+    }
 }

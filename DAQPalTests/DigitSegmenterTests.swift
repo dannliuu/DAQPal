@@ -45,7 +45,7 @@ final class DigitSegmenterTests: XCTestCase {
 
     func testCells_leftToRightWithNoGapsOrOverlaps() {
         let cells = segmenter.digitCells(in: roi, format: format(digitCount: 5))
-        XCTAssertEqual(cells.first?.x, roi.x, accuracy: 1e-9)
+        XCTAssertEqual(cells.first!.x, roi.x, accuracy: 1e-9)
         for i in 1..<cells.count {
             // Each cell starts exactly where the previous one ended.
             XCTAssertEqual(cells[i].x, cells[i - 1].x + cells[i - 1].width, accuracy: 1e-9)

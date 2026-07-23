@@ -49,6 +49,9 @@ struct RootView: View {
             guard captureStack == nil else { return }
             let stack = CaptureStack(appState: appState)
             captureStack = stack
+            #if DEBUG
+            DebugDemo.applyLaunchArguments(to: appState)
+            #endif
             await stack.start()
         }
     }

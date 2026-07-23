@@ -19,9 +19,26 @@ struct DisplayFormat: Codable, Equatable, Hashable, Sendable {
     var unit: String?
     var minimumValue: Double?
     var maximumValue: Double?
+    /// When true, readings must match the exact digit grammar above (spec
+    /// Mode 2 — user-configured format). When false, recognition is lenient:
+    /// any numeric token (digits, decimal point, optional sign) is extracted
+    /// from the OCR text (spec Mode 3 — unknown format). New devices start
+    /// unconstrained and dimensionless; constraining is an explicit user
+    /// action in the format sheet.
+    var constrainToFormat: Bool = true
 
-    /// Default configuration matching the spec's canonical DMM example
-    /// (`±XX.XXX V`, −20…+20 V).
+    /// Starting state for a new device: dimensionless, no range, lenient
+    /// numeric extraction. The digit fields only seed the format sheet.
+    static let unconstrained = DisplayFormat(digitCount: 5,
+                                             decimalPosition: 2,
+                                             signAllowed: true,
+                                             unit: nil,
+                                             minimumValue: nil,
+                                             maximumValue: nil,
+                                             constrainToFormat: false)
+
+    /// The spec's canonical strict DMM example (`±XX.XXX V`, −20…+20 V) —
+    /// used by tests and as the sheet's example configuration.
     static let defaultDMM = DisplayFormat(digitCount: 5,
                                           decimalPosition: 2,
                                           signAllowed: true,

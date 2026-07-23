@@ -32,7 +32,7 @@ struct Device: Identifiable, Codable, Equatable, Hashable, Sendable {
         Device(id: UUID(),
                name: "DMM-\(index)",
                model: "",
-               displayFormat: .defaultDMM,
+               displayFormat: .unconstrained,
                roi: nil)
     }
 }

@@ -116,5 +116,72 @@ Recording: AppState.startRecording → RecordingSession (append-only, keeps reje
 - ✅ Phase 1 (inspection) — this document.
 - ✅ Project settings corrected; SwiftData template removed; shared contract layer
   (models, `AppState`, `FrameSource`, `AspectFillMapper`, `Theme`) written.
-- ⏳ Module implementation (camera / pipeline / UI / results / tests) in progress — see
-  status updates appended below.
+- ✅ Module implementation complete (camera / pipeline / capture UI / results UI / tests):
+  40 source files + 10 test files, written by parallel agents against the frozen contracts.
+- ✅ Integration build green on first attempt (2026-07-23); unit tests 113 passed / 0
+  failed / 2 fixture-skips (see PROGRESS.md gates).
+- ✅ Adversarial review round (architecture/scalability · correctness · UI fidelity, each
+  finding independently verified): 7 confirmed findings fixed —
+  (1) results chart now renders a decimated, cached `ResultsSessionModel` (min/max
+  binning, ≤300 bins/device) built off-main once per session instead of one mark per raw
+  sample; summary counts and per-device stats come from the same single pass;
+  (2) CSV export builds detached off the MainActor;
+  (3) `MeasurementProcessor.process` fans per-device recognition out concurrently
+  (pure/static stage) and keeps validator mutation in the synchronous actor stretch; the
+  whole-ROI path now passes the ROI as Vision's `regionOfInterest` over the shared frame
+  instead of physically cropping per device;
+  (4) `addDevice()` names monotonically past the highest existing DMM-n so removals can't
+  produce duplicate CSV column prefixes;
+  (5) `syncProcessorConfig()` coalesces bursts (skip no-op pushes, cancel-and-replace) so
+  ROI drags don't queue a config push per gesture tick;
+  (6) format-sheet stepper hit targets raised to ≥44 pt;
+  (7) "DC" suffix only for V/A units + SEARCHING devices show zero confidence everywhere.
+  Suite re-passes 113 / 0 / 2 after the fixes; the synthetic end-to-end tests now exercise
+  the concurrent stage and the `regionOfInterest` path.
+  Noted for the roadmap (not fixed): unbounded in-memory `RecordingSession` growth with no
+  incremental persistence (crash loses the session) — pairs with the fixture/persistence
+  roadmap items in PROGRESS.md.
+- ✅ Field-report fix round (2026-07-23), reproduced via new DEBUG launch hooks
+  (`DebugDemo.swift`: `-daqpal-auto-roi`, `-daqpal-auto-record N`, `-daqpal-demo-results`)
+  and Simulator screenshots:
+  (1) `TemporalFilter` redesigned from per-digit agreement to **value-distance scoring**
+  (deviation from window median vs. display-resolution floor and window volatility) —
+  digit agreement rejected good readings at decade rollovers (12.498 → 12.503 changes 3
+  digit positions); regression test added, ramp now passes with 0 rejections;
+  (2) `VisionOCR` switched `.fast` → `.accurate` — `.fast` reports ~0.3 quantized
+  confidence on clean digits, which dominated the fused score (UI showed 32% while
+  LOCKED); `.accurate` yields calibrated 0.6–0.9 values at MVP rates;
+  (3) header chips no longer truncate (natural-width chips in a scrollable row).
+- ✅ Video import (Milestone 12 first slice, 2026-07-23): `Import/VideoImportModel.swift`
+  (`TimeScalingFrameSource` normalizes slow-motion playback timestamps to real capture
+  time by a user-chosen factor — 1×, ¼×/120 fps, ⅛×/240 fps; files with nominal fps ≥ 100
+  flagged as already real-time), `UI/VideoImportView.swift` (file picker → first-frame ROI
+  placement → speed selection → progress → results), header IMPORT chip (disabled while
+  recording; results cover re-asserted after the import cover dismisses since SwiftUI
+  drops a present-while-presenting). Import runs a **fresh** `MeasurementProcessor` and
+  never touches the live camera pipeline. `VideoImportTests` proves the chain end-to-end
+  with an in-test H.264 fixture (½× → value accepted, timeline halved). Suite: 116/0/2.
+- ✅ Reliability round from real-device field testing (2026-07-23). Root cause of
+  "rejects everything": the default format asserted the spec's example grammar
+  (±XX.XXX V, −20…+20) against arbitrary real displays. Changes:
+  (1) **Lenient dimensionless default** — `DisplayFormat.unconstrained` (unit nil, no
+  range, `constrainToFormat=false`) is the new-device default; recognition extracts any
+  numeric token (digits/decimal/attached sign, confusable-repaired, anchored to ≥1 real
+  pre-normalization digit so "HOLD"→"H0LD" can't mint a fake 0). Strict grammar (Mode 2)
+  is opt-in via a CONSTRAIN toggle in the format sheet; unit row gained a "—" none
+  option; range steppers support nil bounds.
+  (2) **Header wordmark removed** per user request — chips get the full width.
+  (3) **ROI drag lag fixed** — gestures update view-local state only, committing to
+  AppState once on gesture end.
+  (4) **ROI auto-tracking** (spec §15 minimal form) — accepted readings report their
+  text's full-frame bounding box (`FrameResult.observedROIs`, from Vision observation
+  boxes converted out of ROI-relative bottom-left space); `AppState` nudges the window
+  toward the observed center — damped (gain 0.3), dead-banded (0.004), step-clamped
+  (0.02/frame), size-preserving, paused while `isEditingROI`. Keeps lock under handheld
+  shake; cannot re-acquire a fully lost display (needs display detection, post-MVP).
+  Suite: 129 / 0 / 2. Known tradeoffs: unconstrained mode has no range ⇒ physical
+  gates inactive until configured; `isEditingROI` is global, so dragging one window
+  pauses tracking for all devices during the gesture.
+- ⬜ Remaining: import-flow Simulator walkthrough (file picker is hard to script);
+  physical-device validation (camera, real-DMM OCR, real iPhone slo-mo footage) — the
+  gates the Simulator cannot cover.

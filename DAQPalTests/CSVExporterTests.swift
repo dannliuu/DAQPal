@@ -7,7 +7,6 @@
 //  from the spec prose, per the "ui-results" agent's handoff note.
 //
 
-import Foundation
 import XCTest
 @testable import DAQPal
 
@@ -60,6 +59,27 @@ final class CSVExporterTests: XCTestCase {
         // value column must be empty for a NaN reading.
         let fields = dataRow.split(separator: ",", omittingEmptySubsequences: false)
         XCTAssertEqual(fields[1], "")
+    }
+
+    func testSingleDevice_nilUnitWritesEmptyUnitField() {
+        // Real-device fix: an unconstrained device is dimensionless. The single
+        // schema keeps the `unit` column but leaves the field empty.
+        var device = Device.makeDefault(index: 1)
+        device.displayFormat = .unconstrained // unit == nil
+        XCTAssertNil(device.unit)
+
+        let accepted = Measurement(timestamp: 0, value: 12.3, unit: nil,
+                                   confidence: 0.9, accepted: true)
+        let session = CompletedSession(id: UUID(), startedAt: Date(), endedAt: Date(),
+                                       devices: [device],
+                                       samples: [RecordingSample(timestamp: 0, readings: [device.id: accepted])],
+                                       firstTimestamp: 0, lastTimestamp: 0)
+        let lines = CSVExporter.csvString(for: session).split(separator: "\n")
+        XCTAssertEqual(String(lines[0]), "timestamp,value,unit,confidence,accepted,rejection_reason")
+        let fields = lines[1].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        // timestamp,value,unit,confidence,accepted,rejection_reason
+        XCTAssertEqual(fields[2], "", "dimensionless device writes an empty unit field")
+        XCTAssertEqual(fields[1], "12.300") // unconstrained default: 3 fraction digits
     }
 
     // MARK: - Multi-device schema
@@ -127,6 +147,32 @@ final class CSVExporterTests: XCTestCase {
         XCTAssertEqual(fields[3], "0")
         XCTAssertEqual(fields[4], "") // device2 had no reading at all this row
         XCTAssertEqual(fields[6], "0")
+    }
+
+    func testMultiDevice_nilUnitDropsHeaderSuffix() {
+        // Real-device fix: a dimensionless device drops the `_<unit>` header
+        // suffix entirely (`dmm1_value`, not a dangling `dmm1_value_`), while a
+        // unit-bearing device keeps it.
+        var dimensionless = Device.makeDefault(index: 1) // name "DMM-1" -> "dmm1"
+        dimensionless.displayFormat = .unconstrained // unit == nil
+        var volts = Device.makeDefault(index: 2) // name "DMM-2" -> "dmm2"
+        volts.displayFormat = DisplayFormat(digitCount: 5, decimalPosition: 2, signAllowed: true,
+                                            unit: "V", minimumValue: -20, maximumValue: 20)
+
+        let m1 = Measurement(timestamp: 0, value: 12.3, unit: nil, confidence: 0.9, accepted: true)
+        let session = CompletedSession(id: UUID(), startedAt: Date(), endedAt: Date(),
+                                       devices: [dimensionless, volts],
+                                       samples: [RecordingSample(timestamp: 0, readings: [dimensionless.id: m1])],
+                                       firstTimestamp: 0, lastTimestamp: 0)
+        let lines = CSVExporter.csvString(for: session).split(separator: "\n")
+        XCTAssertEqual(String(lines[0]),
+                       "timestamp_s,dmm1_value,dmm1_confidence,dmm1_valid,dmm2_value_V,dmm2_confidence,dmm2_valid")
+        // Value/valid columns still align despite the dropped suffix.
+        let fields = lines[1].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        XCTAssertEqual(fields[1], "12.300") // dmm1 value (unconstrained: 3 fraction digits)
+        XCTAssertEqual(fields[3], "1")      // dmm1 valid
+        XCTAssertEqual(fields[4], "")       // dmm2 had no reading this row
+        XCTAssertEqual(fields[6], "0")      // dmm2 valid
     }
 
     func testUnitSanitization_ohmAndDegreesC() {

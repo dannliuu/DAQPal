@@ -40,6 +40,17 @@ struct CameraCaptureScreen: View {
         .fullScreenCover(isPresented: $appState.showResults) {
             ResultsView()
         }
+        .fullScreenCover(isPresented: $appState.showVideoImport, onDismiss: {
+            // A finished import requests results while its own cover is still
+            // presented; SwiftUI drops that present. Re-assert it once this
+            // cover has fully dismissed so the results screen appears.
+            if appState.showResults {
+                appState.showResults = false
+                Task { @MainActor in appState.showResults = true }
+            }
+        }) {
+            VideoImportView()
+        }
     }
 
     // MARK: Viewport

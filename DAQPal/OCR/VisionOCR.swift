@@ -2,9 +2,13 @@
 //  VisionOCR.swift
 //  DAQPal
 //
-//  VNRecognizeTextRequest wrapper (spec §8, Milestone 2). Fast recognition
+//  VNRecognizeTextRequest wrapper (spec §8, Milestone 2). Accurate recognition
 //  level with language correction off: DMM readouts are short digit strings,
-//  and correction would "fix" them into words.
+//  and correction would "fix" them into words. `.accurate` (vs `.fast`) costs
+//  more per frame but returns calibrated confidences — `.fast` reports ~0.3
+//  even on clean digits, which dominated the fused measurement confidence and
+//  read as a broken 32% in the UI. Throughput at MVP processing rates is
+//  fine; revisit as a quality/rate knob during OCR benchmarking (spec §14).
 //
 
 import CoreGraphics
@@ -21,8 +25,9 @@ struct VisionOCR: OCREngine {
     func recognize(in pixelBuffer: CVPixelBuffer,
                    regionOfInterest: NormalizedROI?) async throws -> [OCRCandidate] {
         let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .fast
+        request.recognitionLevel = .accurate
         request.usesLanguageCorrection = false
+        request.automaticallyDetectsLanguage = false
         request.recognitionLanguages = ["en-US"]
 
         if let roi = regionOfInterest {
@@ -44,11 +49,22 @@ struct VisionOCR: OCREngine {
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, options: [:])
         try handler.perform([request])
 
+        // Vision reports observation boxes bottom-left-normalized RELATIVE TO
+        // the regionOfInterest; convert to the project's top-left convention
+        // in the full buffer's space so downstream ROI tracking can use them.
+        let region = regionOfInterest?.clamped() ?? NormalizedROI(x: 0, y: 0, width: 1, height: 1)
         var candidates: [OCRCandidate] = []
         for observation in request.results ?? [] {
+            let box = observation.boundingBox
+            let frameBox = NormalizedROI(
+                x: region.x + box.minX * region.width,
+                y: region.y + (1 - box.maxY) * region.height,
+                width: box.width * region.width,
+                height: box.height * region.height).clamped()
             for candidate in observation.topCandidates(Self.candidatesPerObservation) {
                 candidates.append(OCRCandidate(text: candidate.string,
-                                               confidence: candidate.confidence))
+                                               confidence: candidate.confidence,
+                                               boundingBox: frameBox))
             }
         }
         return candidates.sorted { $0.confidence > $1.confidence }

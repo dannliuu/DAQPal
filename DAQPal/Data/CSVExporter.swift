@@ -63,7 +63,9 @@ enum CSVExporter {
         for device in session.devices {
             let prefix = device.columnPrefix
             let unit = sanitizedUnitToken(device.displayFormat.unit)
-            header.append("\(prefix)_value_\(unit)")
+            // Dimensionless device: drop the unit suffix entirely (`dmm1_value`)
+            // rather than emit a dangling separator (`dmm1_value_`).
+            header.append(unit.isEmpty ? "\(prefix)_value" : "\(prefix)_value_\(unit)")
             header.append("\(prefix)_confidence")
             header.append("\(prefix)_valid")
         }

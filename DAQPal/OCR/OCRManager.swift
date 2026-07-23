@@ -17,6 +17,17 @@ struct OCRCandidate: Equatable, Sendable {
     /// Engine-reported confidence in 0...1 (raw OCR confidence, NOT the fused
     /// measurement confidence — see `ConfidenceEngine`).
     let confidence: Float
+    /// Where the text sits, top-left normalized in the coordinate space of
+    /// the buffer the engine was handed (full-frame when a `regionOfInterest`
+    /// was used — engines convert). Feeds ROI auto-tracking. Optional: engines
+    /// without localization report nil.
+    let boundingBox: NormalizedROI?
+
+    init(text: String, confidence: Float, boundingBox: NormalizedROI? = nil) {
+        self.text = text
+        self.confidence = confidence
+        self.boundingBox = boundingBox
+    }
 }
 
 /// A text recognizer over upright pixel buffers.

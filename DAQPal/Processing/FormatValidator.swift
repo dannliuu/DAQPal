@@ -113,7 +113,98 @@ struct FormatValidator {
         Self.parse(text, format: format)
     }
 
+    // MARK: - Lenient extraction (spec Mode 3 — unknown format)
+
+    /// Extracts the most plausible numeric token from arbitrary OCR text,
+    /// making NO assumption about digit count, decimal position, sign, or unit.
+    /// This is the Mode 3 path used when a device's format is unconstrained —
+    /// real meters whose exact grammar the user has not configured.
+    ///
+    /// Steps:
+    /// 1. Apply the same OCR confusable normalization as strict parsing
+    ///    (O→0, I/l→1, S→5, B→8) so misread glyphs still yield digits.
+    /// 2. Find every token matching `[-+]?(\d+\.\d*|\.\d+|\d+)` — a sign counts
+    ///    only when directly attached to the digits.
+    /// 3. Discard tokens whose ORIGINAL text contained no real digit —
+    ///    otherwise pure-letter words mint fake numbers ("HOLD"→"H0LD"→0).
+    ///    A token must be anchored by at least one true digit; confusables
+    ///    only repair characters around real digits.
+    /// 4. Return the token with the most digits (ties resolve to the leftmost).
+    ///    Text with no digit at all yields `nil`.
+    ///
+    /// Deliberately tolerant of trailing junk: `"12.34.7"` yields the richest
+    /// token `12.34` rather than rejecting — leniency is the point of this
+    /// path. Range checking still happens downstream in `PhysicalValidator`.
+    static func extractNumber(from text: String) -> (value: Double, matched: String)? {
+        let normalized = normalizeConfusables(text)
+        let source = text as NSString
+        let range = NSRange(normalized.startIndex..., in: normalized)
+        var best: (value: Double, matched: String, digits: Int)?
+        for match in numberPattern.matches(in: normalized, range: range) {
+            guard let r = Range(match.range, in: normalized) else { continue }
+            let token = String(normalized[r])
+            let digits = token.filter { isASCIIDigit($0) }.count
+            // The confusable map is 1:1 ASCII→ASCII, so UTF-16 offsets align
+            // with the original text: anchor every token to ≥1 REAL digit.
+            let original = source.substring(with: match.range)
+            guard original.contains(where: { isASCIIDigit($0) }) else { continue }
+            guard digits > 0, let value = numericValue(of: token) else { continue }
+            // Strictly-greater keeps the leftmost token on a digit-count tie.
+            if best == nil || digits > best!.digits {
+                best = (value, token, digits)
+            }
+        }
+        guard let best else { return nil }
+        return (best.value, best.matched)
+    }
+
+    /// Format-aware entry point for the recognition pipeline: strict grammar
+    /// when `format.constrainToFormat`, lenient numeric extraction otherwise. A
+    /// lenient text with no numeric token is reported as `.invalidFormat`, so
+    /// the confidence engine treats "no number here" the same as a strict
+    /// grammar failure.
+    static func value(from text: String, format: DisplayFormat) -> FormatParseResult {
+        if format.constrainToFormat {
+            return parse(text, format: format)
+        }
+        guard let extracted = extractNumber(from: text) else {
+            return .invalid(.invalidFormat)
+        }
+        return .valid(extracted.value)
+    }
+
+    /// Instance forwarding, mirroring `parse`; the logic is pure and static.
+    func value(from text: String, format: DisplayFormat) -> FormatParseResult {
+        Self.value(from: text, format: format)
+    }
+
     // MARK: - Private
+
+    /// Numeric-token grammar for lenient extraction (see `extractNumber`).
+    /// Compiled once; the pattern is a compile-time constant, so the `try!`
+    /// can never fail at runtime.
+    private static let numberPattern = try! NSRegularExpression(
+        pattern: #"[-+]?(?:\d+\.\d*|\.\d+|\d+)"#)
+
+    /// Converts one regex-matched numeric token into a Double via a canonical
+    /// `.`-decimal string, so parsing is locale-independent and tolerates the
+    /// bare-/trailing-dot forms the grammar can emit (`.5`, `12.`).
+    private static func numericValue(of token: String) -> Double? {
+        var body = token
+        var negative = false
+        if let first = body.first, first == "-" || first == "+" {
+            negative = (first == "-")
+            body.removeFirst()
+        }
+        let parts = body.split(separator: ".", omittingEmptySubsequences: false)
+        let integerPart = parts.first.map(String.init) ?? ""
+        let fractionPart = parts.count > 1 ? String(parts[1]) : ""
+        let numeric = (negative ? "-" : "")
+            + (integerPart.isEmpty ? "0" : integerPart)
+            + (fractionPart.isEmpty ? "" : "." + fractionPart)
+        guard let value = Double(numeric), value.isFinite else { return nil }
+        return value
+    }
 
     private static func isASCIIDigit(_ c: Character) -> Bool {
         c.isASCII && ("0"..."9").contains(c)

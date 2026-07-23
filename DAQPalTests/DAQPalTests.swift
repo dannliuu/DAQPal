@@ -2,7 +2,10 @@
 //  DAQPalTests.swift
 //  DAQPalTests
 //
-//  Created by Daniel Liu on 2026-07-22.
+//  Trivial smoke test: the contract's public types/constants exist and are
+//  wired together as documented. Real coverage lives in the per-module
+//  suites alongside this file (FormatValidatorTests, ValidationPipelineTests,
+//  CSVExporterTests, RecordingSessionTests, SyntheticPipelineTests, etc).
 //
 
 import XCTest
@@ -10,29 +13,53 @@ import XCTest
 
 final class DAQPalTests: XCTestCase {
 
-    override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
+    func testProductNaming_isDAQPalEverywhere() {
+        // Hard project rule: the product is DAQPal, never a legacy name.
+        XCTAssertEqual(CSVExporter.fileName, "daqpal_session.csv")
     }
 
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
+    @MainActor
+    func testAppStateConstants() {
+        XCTAssertEqual(AppState.lockTimeout, 1.0)
+        XCTAssertGreaterThan(AppState.maxDevices, 0)
     }
 
-    func testExample() throws {
-        // This is an example of a functional test case.
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // Any test you write for XCTest can be annotated as throws and async.
-        // Mark your test throws to produce an unexpected failure when your test encounters an uncaught error.
-        // Mark your test async to allow awaiting for asynchronous code to complete. Check the results with assertions afterwards.
-        // XCTest Documentation
-        // https://developer.apple.com/documentation/xctest
+    @MainActor
+    func testAppState_defaultsToOneDevice() {
+        let appState = AppState()
+        XCTAssertEqual(appState.devices.count, 1)
+        XCTAssertFalse(appState.isRecording)
+        XCTAssertNil(appState.completedSession)
     }
 
-    func testPerformanceExample() throws {
-        // This is an example of a performance test case.
-        self.measure {
-            // Put the code you want to measure the time of here.
+    func testDevice_makeDefault_isUnconstrainedAndDimensionless() {
+        // Field-report decision (2026-07-23): new devices start dimensionless
+        // with lenient numeric extraction — no unit, no range, no grammar
+        // assumption. Strict format is opt-in via the format sheet.
+        let device = Device.makeDefault(index: 1)
+        XCTAssertEqual(device.name, "DMM-1")
+        XCTAssertEqual(device.displayFormat, DisplayFormat.unconstrained)
+        XCTAssertFalse(device.displayFormat.constrainToFormat)
+        XCTAssertNil(device.displayFormat.unit)
+        XCTAssertNil(device.displayFormat.minimumValue)
+        XCTAssertNil(device.displayFormat.maximumValue)
+        XCTAssertNil(device.roi)
+    }
+
+    func testDisplayFormat_defaultDMM_matchesSpecCanonicalExample() {
+        XCTAssertEqual(DisplayFormat.defaultDMM.patternPreview, "±XX.XXX V")
+    }
+
+    func testMeasurement_rejectedConvenience_isNeverAccepted() {
+        let m = Measurement.rejected(timestamp: 0, reason: .displayLost)
+        XCTAssertFalse(m.accepted)
+        XCTAssertEqual(m.rejectionReason, .displayLost)
+        XCTAssertTrue(m.value.isNaN)
+    }
+
+    func testRejectionReason_allCasesHaveADisplayLabel() {
+        for reason in RejectionReason.allCases {
+            XCTAssertFalse(reason.displayLabel.isEmpty)
         }
     }
-
 }

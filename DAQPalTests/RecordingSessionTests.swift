@@ -7,7 +7,6 @@
 //  lock/unlock behavior, which is the only place that logic lives.
 //
 
-import Foundation
 import XCTest
 @testable import DAQPal
 
@@ -18,7 +17,10 @@ final class RecordingSessionTests: XCTestCase {
 
     private func result(timestamp: TimeInterval, accepted: Bool, value: Double = 12.347,
                         reason: RejectionReason? = nil) -> FrameResult {
-        let measurement: Measurement
+        // `DAQPal.`-qualified: a bare `Measurement` type annotation is
+        // ambiguous with `Foundation.Measurement<UnitType>`, which is
+        // visible here even without an explicit `import Foundation`.
+        let measurement: DAQPal.Measurement
         if accepted {
             measurement = Measurement(timestamp: timestamp, value: value, unit: "V",
                                       confidence: 0.9, accepted: true)
@@ -149,9 +151,15 @@ final class RecordingSessionTests: XCTestCase {
 
     // MARK: - AppState.apply(_:) lock behavior
 
+    /// A device whose `id` matches `deviceID`, so `result(...)`'s readings
+    /// (keyed by `deviceID`) line up with `appState.liveReadings[device.id]`.
+    private func deviceWithROI() -> Device {
+        Device(id: deviceID, name: "DMM-1", model: "", displayFormat: .defaultDMM,
+              roi: NormalizedROI.defaultROI)
+    }
+
     func testAppState_acceptedReadingLocksDevice() {
-        var device = Device.makeDefault(index: 1)
-        device.roi = NormalizedROI.defaultROI
+        let device = deviceWithROI()
         let appState = AppState(devices: [device])
 
         appState.apply(result(timestamp: 0, accepted: true, value: 12.347))
@@ -163,8 +171,7 @@ final class RecordingSessionTests: XCTestCase {
     }
 
     func testAppState_staleReadingUnlocksAfterLockTimeout() {
-        var device = Device.makeDefault(index: 1)
-        device.roi = NormalizedROI.defaultROI
+        let device = deviceWithROI()
         let appState = AppState(devices: [device])
 
         appState.apply(result(timestamp: 0, accepted: true, value: 12.347))
@@ -181,8 +188,7 @@ final class RecordingSessionTests: XCTestCase {
     }
 
     func testAppState_withinLockTimeoutStaysLocked() {
-        var device = Device.makeDefault(index: 1)
-        device.roi = NormalizedROI.defaultROI
+        let device = deviceWithROI()
         let appState = AppState(devices: [device])
 
         appState.apply(result(timestamp: 0, accepted: true, value: 12.347))

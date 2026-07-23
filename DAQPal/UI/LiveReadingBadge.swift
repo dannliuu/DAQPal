@@ -22,7 +22,9 @@ struct LiveReadingsPanel: View {
             HStack(alignment: .firstTextBaseline) {
                 SectionLabel(text: "LIVE READINGS")
                 Spacer(minLength: 8)
-                Text("Apple Vision OCR · constrained")
+                Text(appState.devices.allSatisfy { $0.displayFormat.constrainToFormat }
+                     ? "Apple Vision OCR · constrained"
+                     : "Apple Vision OCR · free numeric")
                     .font(Theme.ui(10))
                     .foregroundStyle(Theme.inkMuted)
                     .lineLimit(1)
@@ -50,7 +52,12 @@ private struct DeviceReadingCard: View {
 
     private var format: DisplayFormat { device.displayFormat }
     private var isLocked: Bool { liveReading.locked }
-    private var confidence: Float { max(0, min(1, liveReading.confidence)) }
+    // Unlocked (SEARCHING) always reads as zero confidence, regardless of
+    // whatever value the OCR pipeline last reported.
+    private var confidence: Float {
+        guard isLocked else { return 0 }
+        return max(0, min(1, liveReading.confidence))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -101,8 +108,11 @@ private struct DeviceReadingCard: View {
     }
 
     private var subtitle: String {
-        let unit = format.unit ?? ""
-        return unit.isEmpty ? device.name : "\(device.name) · \(unit) DC"
+        guard let unit = format.unit, !unit.isEmpty else { return device.name }
+        // "DC" only makes sense for the electrical units (V, A) — Ω, °C, and
+        // Hz show bare.
+        let suffix = (unit == "V" || unit == "A") ? "\(unit) DC" : unit
+        return "\(device.name) · \(suffix)"
     }
 
     /// `patternPreview` with the trailing " <unit>" suffix stripped
@@ -115,11 +125,18 @@ private struct DeviceReadingCard: View {
         return pattern
     }
 
+    /// "⚙ ANY" while unconstrained — there is no fixed-digit grammar to
+    /// preview, and showing a stale pattern would look like a format that's
+    /// actually being enforced.
+    private var formatButtonLabel: String {
+        format.constrainToFormat ? "⚙ \(patternSansUnit)" : "⚙ ANY"
+    }
+
     private var formatButton: some View {
         Button {
             appState.formatSheetDeviceID = device.id
         } label: {
-            Text("⚙ \(patternSansUnit)")
+            Text(formatButtonLabel)
                 .font(Theme.ui(10, weight: .semibold))
                 .lineLimit(1)
                 .foregroundStyle(Theme.ink)
@@ -171,7 +188,14 @@ private struct DeviceReadingCard: View {
     private var accessibilitySummary: String {
         let statusWord = isLocked ? "locked" : "searching"
         let pct = String(format: "%.1f", confidence * 100)
-        let valuePart = isLocked ? "reading \(valueText) \(format.unit ?? "")" : "no reading yet"
         return "\(device.name), \(statusWord), \(pct) percent confidence, \(valuePart)"
+    }
+
+    /// No unit ⇒ no trailing unit word — matches the visual "no suffix
+    /// anywhere" rule for dimensionless devices (unset by default now).
+    private var valuePart: String {
+        guard isLocked else { return "no reading yet" }
+        guard let unit = format.unit, !unit.isEmpty else { return "reading \(valueText)" }
+        return "reading \(valueText) \(unit)"
     }
 }

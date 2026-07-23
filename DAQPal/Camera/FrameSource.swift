@@ -45,4 +45,18 @@ struct FrameResult: Sendable {
     let readings: [UUID: Measurement]
     /// Raw whole-ROI OCR text (first configured device) for the debug overlay.
     let debugText: String?
+    /// Full-frame normalized bounding box of the ACCEPTED reading's text per
+    /// device — feeds ROI auto-tracking (`AppState`) so the window can follow
+    /// a shaking display. Absent for rejected/missing readings.
+    let observedROIs: [UUID: NormalizedROI]
+
+    init(timestamp: TimeInterval,
+         readings: [UUID: Measurement],
+         debugText: String?,
+         observedROIs: [UUID: NormalizedROI] = [:]) {
+        self.timestamp = timestamp
+        self.readings = readings
+        self.debugText = debugText
+        self.observedROIs = observedROIs
+    }
 }

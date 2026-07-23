@@ -12,6 +12,9 @@ import SwiftUI
 
 struct ResultsView: View {
     @Environment(AppState.self) private var appState
+    /// Decimated series/stats/counts, built off-main once per session — view
+    /// bodies never scan raw samples (multi-thousand-sample sessions).
+    @State private var model: ResultsSessionModel?
     @State private var exportURL: URL?
     @State private var exportError: String?
 
@@ -39,19 +42,43 @@ struct ResultsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 header(session)
-                summaryChips(session)
-                graphCard(session)
-                statsGrid(session)
-                tableCard(session)
-                exportButtons(session)
+                if let model, model.sessionID == session.id {
+                    summaryChips(session, model: model)
+                    graphCard(session, model: model)
+                    statsGrid(session, model: model)
+                    tableCard(session)
+                    exportButtons(session)
+                } else {
+                    preparingPlaceholder
+                }
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
             .padding(.bottom, 30)
         }
         .task(id: session.id) {
-            prepareExport(session)
+            if model?.sessionID != session.id {
+                model = nil
+                exportURL = nil
+            }
+            // CompletedSession is Sendable and both builders are pure, so the
+            // heavy work (full-session scan + CSV string/file) runs detached —
+            // the MainActor only receives the finished values.
+            let built = await Task.detached(priority: .userInitiated) {
+                ResultsSessionModel.build(from: session)
+            }.value
+            guard appState.completedSession?.id == session.id else { return }
+            model = built
+            await prepareExport(session)
         }
+    }
+
+    private var preparingPlaceholder: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+            SectionLabel(text: "PREPARING RESULTS")
+        }
+        .frame(maxWidth: .infinity, minHeight: 120)
     }
 
     private var emptyState: some View {
@@ -118,16 +145,16 @@ struct ResultsView: View {
 
     // MARK: Summary chips
 
-    private func summaryChips(_ session: CompletedSession) -> some View {
+    private func summaryChips(_ session: CompletedSession, model: ResultsSessionModel) -> some View {
         HStack(spacing: 6) {
             chip("⏱ " + String(format: "%.1fs", session.duration),
                  background: .white, foreground: Theme.ink, border: Theme.hairline)
             chip(String(format: "%.1f", session.samplesPerSecond) + " samples/s",
                  background: .white, foreground: Theme.ink, border: Theme.hairline)
-            chip("✓ \(session.acceptedCount) accepted",
+            chip("✓ \(model.acceptedCount) accepted",
                  background: Theme.acceptedChipBackground, foreground: Theme.acceptedChipForeground,
                  border: Theme.acceptedChipForeground.opacity(0.25))
-            chip("✕ \(session.rejectedCount) rejected",
+            chip("✕ \(model.rejectedCount) rejected",
                  background: Theme.rejectedRowBackground, foreground: Theme.searchingChipForeground,
                  border: Theme.searchingChipForeground.opacity(0.25))
         }
@@ -145,14 +172,14 @@ struct ResultsView: View {
 
     // MARK: Graph card
 
-    private func graphCard(_ session: CompletedSession) -> some View {
+    private func graphCard(_ session: CompletedSession, model: ResultsSessionModel) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 SectionLabel(text: "MEASUREMENT vs TIME", color: Theme.inkMuted)
                 Spacer()
                 legend(session)
             }
-            ResultsGraphView(session: session)
+            ResultsGraphView(series: model.series, duration: session.duration)
                 .frame(height: 140)
             HStack {
                 Text("0.00s")
@@ -188,21 +215,20 @@ struct ResultsView: View {
 
     // MARK: Stats cards
 
-    private func statsGrid(_ session: CompletedSession) -> some View {
+    private func statsGrid(_ session: CompletedSession, model: ResultsSessionModel) -> some View {
         let columns = session.devices.count > 1
             ? [GridItem(.flexible()), GridItem(.flexible())]
             : [GridItem(.flexible())]
         return LazyVGrid(columns: columns, spacing: 10) {
             ForEach(session.devices) { device in
-                statsCard(session: session, device: device)
+                statsCard(device: device, stats: model.stats[device.id])
             }
         }
     }
 
-    private func statsCard(session: CompletedSession, device: Device) -> some View {
-        let stats = SessionStatistics(session: session, deviceID: device.id)
-        return VStack(alignment: .leading, spacing: 4) {
-            Text("\(device.name) · \(device.unit ?? "—") DC")
+    private func statsCard(device: Device, stats: ResultsSessionModel.DeviceStats?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(deviceSubtitle(device))
                 .font(Theme.ui(9, weight: .heavy))
                 .tracking(0.4)
                 .foregroundStyle(Theme.inkMuted)
@@ -225,6 +251,13 @@ struct ResultsView: View {
     private func statLine(_ value: Double?, device: Device) -> String {
         guard let value else { return "—" }
         return device.displayFormat.formatted(value)
+    }
+
+    /// "DC" only applies to electrical units — "DMM-1 · V DC" but "DMM-2 · °C".
+    private func deviceSubtitle(_ device: Device) -> String {
+        let unit = device.unit ?? "—"
+        let suffix = (unit == "V" || unit == "A") ? " DC" : ""
+        return "\(device.name) · \(unit)\(suffix)"
     }
 
     // MARK: Table card
@@ -353,7 +386,7 @@ struct ResultsView: View {
             .accessibilityLabel("Export CSV")
         } else {
             Button {
-                prepareExport(session)
+                Task { await prepareExport(session) }
             } label: {
                 Text("⬇ EXPORT CSV")
                     .font(Theme.ui(12, weight: .heavy))
@@ -368,10 +401,16 @@ struct ResultsView: View {
         }
     }
 
-    private func prepareExport(_ session: CompletedSession) {
+    /// Builds the CSV string + file off the MainActor — the build cost scales
+    /// with session size and this runs exactly when the cover is presenting.
+    private func prepareExport(_ session: CompletedSession) async {
         exportError = nil
         do {
-            exportURL = try CSVExporter.exportFile(for: session)
+            let url = try await Task.detached(priority: .utility) {
+                try CSVExporter.exportFile(for: session)
+            }.value
+            guard appState.completedSession?.id == session.id else { return }
+            exportURL = url
         } catch {
             exportURL = nil
             exportError = "Couldn't prepare CSV export: \(error.localizedDescription)"

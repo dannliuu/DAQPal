@@ -137,6 +137,21 @@ final class ValidationPipelineTests: XCTestCase {
         XCTAssertEqual(lastEvaluation.consistency, 1.0, accuracy: 1e-6)
     }
 
+    func testTemporalFilter_decadeRolloverRampNotFlagged() {
+        // Regression: a smooth ramp crossing 12.499 → 12.500 changes several
+        // digit positions at once; digit-agreement scoring rejected these
+        // perfectly good readings mid-ramp. Value-distance scoring must let
+        // the whole ramp through (spec §16: real transitions stay detectable).
+        let filter = TemporalFilter(format: .defaultDMM)
+        var value = 12.468
+        for _ in 0..<12 {
+            value += 0.010
+            let rounded = (value * 1000).rounded() / 1000
+            XCTAssertFalse(filter.evaluate(value: rounded).rejected,
+                           "ramp value \(rounded) was flagged as temporally inconsistent")
+        }
+    }
+
     func testTemporalFilter_neverRewritesTheValue() {
         // The filter only scores; `Evaluation` carries no value field for the
         // pipeline to substitute in place of the OCR'd reading.

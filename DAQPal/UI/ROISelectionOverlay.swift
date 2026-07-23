@@ -10,6 +10,13 @@
 //  project rule, normalized ROI space == buffer space == oriented preview
 //  space, so the only view-space conversion needed is aspect-fill.
 //
+//  Drag latency: gestures used to call `appState.updateDevice` on every
+//  `.onChanged` tick, which mutates the observed `devices` array and forces a
+//  full view-tree diff (plus a processor-config push) per pixel of finger
+//  movement — on device this reads as laggy dragging. Gestures now drive a
+//  view-local `@State` rect while active and commit to `AppState` once, in
+//  `.onEnded`.
+//
 
 import SwiftUI
 
@@ -55,6 +62,14 @@ private struct ROIWindowView: View {
     /// (possibly already-mutated) current rect, so live updates don't drift.
     @State private var windowDragAnchor: CGRect?
     @State private var resizeAnchor: CGRect?
+    /// View-local rect while a move or resize gesture is active; `currentRect`
+    /// renders from this instead of `device.roi` so the window tracks the
+    /// finger with no round-trip through `AppState`. Only one gesture can be
+    /// active on a given window at a time, so move and resize share it. Nil
+    /// whenever neither gesture is active, at which point rendering falls
+    /// back to `device.roi` — which is what makes ROI auto-tracking visible
+    /// between gestures.
+    @State private var liveDragRect: CGRect?
 
     private static let handleVisualSize: CGFloat = 8
     /// ≥44pt hit area around each visually-8pt corner handle (project rule).
@@ -74,7 +89,8 @@ private struct ROIWindowView: View {
     }
 
     private var currentRect: CGRect {
-        mapper.viewRect(fromNormalized: device.roi ?? ghostNormalizedROI)
+        if let liveDragRect { return liveDragRect }
+        return mapper.viewRect(fromNormalized: device.roi ?? ghostNormalizedROI)
     }
 
     private var borderColor: Color { isLocked ? Theme.brandYellow : Theme.roiSearching }
@@ -176,60 +192,89 @@ private struct ROIWindowView: View {
     private var windowDragGesture: some Gesture {
         DragGesture(minimumDistance: 2)
             .onChanged { value in
+                // First tick of this gesture: freeze the anchor and pause
+                // auto-tracking so it can't fight the finger. `isEditingROI`
+                // is set only here (not every tick) — repeated writes would
+                // reintroduce the same per-tick `AppState` mutation this fix
+                // removes.
+                if windowDragAnchor == nil { appState.isEditingROI = true }
                 let anchor = windowDragAnchor ?? currentRect
                 windowDragAnchor = anchor
-                var moved = anchor.offsetBy(dx: value.translation.width, dy: value.translation.height)
-                moved.origin.x = min(max(moved.origin.x, 0), max(0, containerSize.width - moved.width))
-                moved.origin.y = min(max(moved.origin.y, 0), max(0, containerSize.height - moved.height))
-                commit(moved)
+                liveDragRect = clampedMove(from: anchor, translation: value.translation)
             }
-            .onEnded { _ in windowDragAnchor = nil }
+            .onEnded { value in
+                if let anchor = windowDragAnchor {
+                    commit(clampedMove(from: anchor, translation: value.translation))
+                    appState.isEditingROI = false
+                }
+                windowDragAnchor = nil
+                liveDragRect = nil
+            }
+    }
+
+    private func clampedMove(from anchor: CGRect, translation: CGSize) -> CGRect {
+        var moved = anchor.offsetBy(dx: translation.width, dy: translation.height)
+        moved.origin.x = min(max(moved.origin.x, 0), max(0, containerSize.width - moved.width))
+        moved.origin.y = min(max(moved.origin.y, 0), max(0, containerSize.height - moved.height))
+        return moved
     }
 
     private func resizeGesture(for h: Handle) -> some Gesture {
         DragGesture(minimumDistance: 2)
             .onChanged { value in
+                if resizeAnchor == nil { appState.isEditingROI = true }
                 let anchor = resizeAnchor ?? currentRect
                 resizeAnchor = anchor
-                var left = anchor.minX, right = anchor.maxX
-                var top = anchor.minY, bottom = anchor.maxY
-                switch h {
-                case .topLeft:
-                    left += value.translation.width
-                    top += value.translation.height
-                case .topRight:
-                    right += value.translation.width
-                    top += value.translation.height
-                case .bottomLeft:
-                    left += value.translation.width
-                    bottom += value.translation.height
-                case .bottomRight:
-                    right += value.translation.width
-                    bottom += value.translation.height
-                }
-                left = max(0, left)
-                top = max(0, top)
-                right = min(containerSize.width, right)
-                bottom = min(containerSize.height, bottom)
-                if right - left < Self.minimumViewSize {
-                    switch h {
-                    case .topLeft, .bottomLeft: left = right - Self.minimumViewSize
-                    default: right = left + Self.minimumViewSize
-                    }
-                }
-                if bottom - top < Self.minimumViewSize {
-                    switch h {
-                    case .topLeft, .topRight: top = bottom - Self.minimumViewSize
-                    default: bottom = top + Self.minimumViewSize
-                    }
-                }
-                commit(CGRect(x: left, y: top, width: right - left, height: bottom - top))
+                liveDragRect = resizedRect(handle: h, anchor: anchor, translation: value.translation)
             }
-            .onEnded { _ in resizeAnchor = nil }
+            .onEnded { value in
+                if let anchor = resizeAnchor {
+                    commit(resizedRect(handle: h, anchor: anchor, translation: value.translation))
+                    appState.isEditingROI = false
+                }
+                resizeAnchor = nil
+                liveDragRect = nil
+            }
+    }
+
+    private func resizedRect(handle h: Handle, anchor: CGRect, translation: CGSize) -> CGRect {
+        var left = anchor.minX, right = anchor.maxX
+        var top = anchor.minY, bottom = anchor.maxY
+        switch h {
+        case .topLeft:
+            left += translation.width
+            top += translation.height
+        case .topRight:
+            right += translation.width
+            top += translation.height
+        case .bottomLeft:
+            left += translation.width
+            bottom += translation.height
+        case .bottomRight:
+            right += translation.width
+            bottom += translation.height
+        }
+        left = max(0, left)
+        top = max(0, top)
+        right = min(containerSize.width, right)
+        bottom = min(containerSize.height, bottom)
+        if right - left < Self.minimumViewSize {
+            switch h {
+            case .topLeft, .bottomLeft: left = right - Self.minimumViewSize
+            default: right = left + Self.minimumViewSize
+            }
+        }
+        if bottom - top < Self.minimumViewSize {
+            switch h {
+            case .topLeft, .topRight: top = bottom - Self.minimumViewSize
+            default: bottom = top + Self.minimumViewSize
+            }
+        }
+        return CGRect(x: left, y: top, width: right - left, height: bottom - top)
     }
 
     /// Converts a view-space rect back to normalized ROI space and writes it
-    /// through `appState.updateDevice`, live, on every gesture tick.
+    /// through `appState.updateDevice` — called once, from `.onEnded`.
     private func commit(_ viewRect: CGRect) {
         let normalized = mapper.normalizedRect(fromViewRect: viewRect).clamped()
         var updated = device

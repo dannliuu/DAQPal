@@ -10,6 +10,10 @@
 //  never hidden — they are pinned as red "✕" markers at the bottom of the
 //  plot at their timestamp.
 //
+//  The chart renders the precomputed, decimated `ResultsSessionModel`
+//  series (built off-main, once per session) — never raw samples — so mark
+//  count stays bounded regardless of recording length.
+//
 
 import Charts
 import SwiftUI
@@ -39,28 +43,29 @@ enum ResultsSeriesPalette {
 }
 
 struct ResultsGraphView: View {
-    let session: CompletedSession
+    let series: [ResultsSessionModel.DeviceSeries]
+    let duration: TimeInterval
 
-    init(session: CompletedSession) {
-        self.session = session
+    init(series: [ResultsSessionModel.DeviceSeries], duration: TimeInterval) {
+        self.series = series
+        self.duration = duration
     }
 
     var body: some View {
         Chart {
-            ForEach(Array(session.devices.enumerated()), id: \.element.id) { index, device in
-                let normalized = normalizedPoints(for: device)
-                ForEach(Array(normalized.enumerated()), id: \.offset) { _, point in
+            ForEach(series) { device in
+                ForEach(Array(device.points.enumerated()), id: \.offset) { _, point in
                     LineMark(
                         x: .value("Time", point.time),
-                        y: .value(device.name, point.value)
+                        y: .value("Value", point.value),
+                        series: .value("Device", device.name)
                     )
-                    .foregroundStyle(ResultsSeriesPalette.color(at: index))
-                    .lineStyle(StrokeStyle(lineWidth: ResultsSeriesPalette.lineWidth(at: index)))
+                    .foregroundStyle(ResultsSeriesPalette.color(at: device.paletteIndex))
+                    .lineStyle(StrokeStyle(lineWidth: ResultsSeriesPalette.lineWidth(at: device.paletteIndex)))
                     .interpolationMethod(.linear)
                 }
 
-                let rejections = rejectedTimes(for: device)
-                ForEach(Array(rejections.enumerated()), id: \.offset) { _, time in
+                ForEach(Array(device.rejectionTimes.enumerated()), id: \.offset) { _, time in
                     PointMark(x: .value("Time", time), y: .value("Rejected", 0))
                         .symbol {
                             Text("✕")
@@ -76,45 +81,15 @@ struct ResultsGraphView: View {
                 AxisGridLine()
             }
         }
-        .chartXScale(domain: 0...max(session.duration, 0.001))
+        .chartXScale(domain: 0...max(duration, 0.001))
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 3)) { value in
+            // Gridlines only: the surrounding card renders the handoff's
+            // "0.00s → duration" endpoint labels, so in-chart labels would
+            // duplicate them in a second format.
+            AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                 AxisGridLine()
-                AxisValueLabel {
-                    if let seconds = value.as(Double.self) {
-                        Text(String(format: "%.1fs", seconds))
-                    }
-                }
             }
         }
         .accessibilityLabel("Measurement versus time. Each device's line is scaled to its own value range; rejected readings are marked with a cross at the bottom of the plot.")
-    }
-
-    /// Accepted-only points for one device, value mapped into 0...1 against
-    /// that device's own min/max (dual-scale plotting, design handoff §3).
-    private func normalizedPoints(for device: Device) -> [(time: Double, value: Double)] {
-        let points = session.acceptedPoints(for: device.id)
-        guard !points.isEmpty else { return [] }
-        let values = points.map(\.value)
-        var minValue = values.min() ?? 0
-        var maxValue = values.max() ?? 0
-        if maxValue - minValue < 1e-6 {
-            // A flat/near-flat series would otherwise divide by ~0; widen the
-            // window slightly so it renders as a flat mid-plot line.
-            minValue -= 0.01
-            maxValue += 0.01
-        }
-        return points.map { point in
-            (time: point.time, value: (point.value - minValue) / (maxValue - minValue))
-        }
-    }
-
-    /// Relative timestamps of every rejected reading for one device — plotted
-    /// regardless of whether that device has any accepted points at all.
-    private func rejectedTimes(for device: Device) -> [Double] {
-        session.samples.compactMap { sample in
-            guard let reading = sample.readings[device.id], !reading.accepted else { return nil }
-            return session.relativeTime(sample.timestamp)
-        }
     }
 }

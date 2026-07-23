@@ -2,10 +2,13 @@
 //  FormatConfigurationSheet.swift
 //  DAQPal
 //
-//  Display-format bottom sheet (design handoff §2, spec §10 Mode 2 —
-//  user-configured format). Edits write straight through to `AppState` so the
-//  live readings panel and pattern preview update together; there is no local
-//  draft state to discard/commit.
+//  Display-format bottom sheet (design handoff §2, spec §10). Devices start
+//  unconstrained (Mode 3 — free numeric extraction, spec §10) so a real
+//  display isn't rejected for not matching an assumed grammar; the CONSTRAIN
+//  row is how a user opts back into Mode 2 — user-configured exact format.
+//  Edits write straight through to `AppState` so the live readings panel and
+//  pattern preview update together; there is no local draft state to
+//  discard/commit.
 //
 
 import SwiftUI
@@ -38,12 +41,20 @@ struct FormatConfigurationSheet: View {
     // MARK: Layout
 
     private func sheetContent(_ device: Device) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let constrained = device.displayFormat.constrainToFormat
+        return VStack(alignment: .leading, spacing: 14) {
             header(device)
             patternPreview(device)
+            formatRow(label: "CONSTRAIN") { constrainToggle(device) }
+            // Digit/decimal/sign only shape the strict grammar, so they read
+            // as secondary while unconstrained instead of disappearing —
+            // the user may be pre-configuring a format to switch back to.
             formatRow(label: "DIGITS") { digitsControl(device) }
+                .opacity(constrained ? 1 : 0.45)
             formatRow(label: "DECIMAL AFTER DIGIT") { decimalStepper(device) }
+                .opacity(constrained ? 1 : 0.45)
             formatRow(label: "SIGN (±)") { signToggle(device) }
+                .opacity(constrained ? 1 : 0.45)
             formatRow(label: "UNIT") { unitControl(device) }
             formatRow(label: "VALID RANGE") { rangeStepper(device) }
             doneButton
@@ -60,13 +71,17 @@ struct FormatConfigurationSheet: View {
                 Text("Display format — \(device.name)")
                     .font(Theme.ui(13, weight: .heavy))
                     .foregroundStyle(Theme.ink)
-                Text("\(modelLabel(device)) · Mode 2 — user-configured format")
+                Text("\(modelLabel(device)) · \(modeLabel(device.displayFormat))")
                     .font(Theme.ui(10, weight: .medium))
                     .foregroundStyle(Theme.inkMuted)
             }
             Spacer(minLength: 8)
             closeButton
         }
+    }
+
+    private func modeLabel(_ format: DisplayFormat) -> String {
+        format.constrainToFormat ? "Mode 2 — user-configured format" : "Mode 3 — free numeric"
     }
 
     private var closeButton: some View {
@@ -88,14 +103,33 @@ struct FormatConfigurationSheet: View {
     }
 
     private func patternPreview(_ device: Device) -> some View {
-        Text(device.displayFormat.patternPreview)
-            .font(Theme.mono(24, weight: .semibold))
-            .tracking(2)
-            .foregroundStyle(Theme.brandYellow)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Theme.ink))
-            .accessibilityLabel("Pattern preview \(device.displayFormat.patternPreview)")
+        let constrained = device.displayFormat.constrainToFormat
+        return Group {
+            if constrained {
+                Text(device.displayFormat.patternPreview)
+                    .font(Theme.mono(24, weight: .semibold))
+                    .tracking(2)
+            } else {
+                // No grammar to preview once unconstrained — show what IS
+                // still recognized (digits, sign, decimal point) instead of
+                // a stale digit-count pattern the OCR path no longer enforces.
+                VStack(spacing: 5) {
+                    Text("0-9 · ± · .")
+                        .font(Theme.mono(22, weight: .semibold))
+                        .tracking(2)
+                    Text("ANY NUMBER")
+                        .font(Theme.ui(9, weight: .heavy))
+                        .tracking(0.9)
+                }
+            }
+        }
+        .foregroundStyle(Theme.brandYellow)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 14)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.ink))
+        .accessibilityLabel(constrained
+            ? "Pattern preview \(device.displayFormat.patternPreview)"
+            : "Pattern preview: any number, digits, sign, and decimal point")
     }
 
     private func formatRow<Content: View>(label: String, @ViewBuilder content: () -> Content) -> some View {
@@ -153,6 +187,29 @@ struct FormatConfigurationSheet: View {
         .accessibilityLabel("Decimal after digit \(decimal)")
     }
 
+    /// Same toggle-chip styling as `signToggle` below — ON (constrained)
+    /// reads like "ALLOWED" (ink-filled, yellow text), OFF (free numeric)
+    /// reads like the disabled state (outlined only).
+    private func constrainToggle(_ device: Device) -> some View {
+        let constrained = device.displayFormat.constrainToFormat
+        return Button {
+            adjust(device) { $0.constrainToFormat.toggle() }
+        } label: {
+            Text(constrained ? "EXACT FORMAT" : "ANY NUMBER")
+                .font(Theme.ui(10, weight: .heavy))
+                .tracking(0.4)
+                .foregroundStyle(constrained ? Theme.brandYellow : Theme.ink)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 5).fill(constrained ? Theme.ink : Color.clear))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Theme.heavyRule, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle().inset(by: -8))
+        .accessibilityLabel("Recognition constraint")
+        .accessibilityValue(constrained ? "Exact format" : "Any number")
+    }
+
     private func signToggle(_ device: Device) -> some View {
         let allowed = device.displayFormat.signAllowed
         return Button {
@@ -173,30 +230,72 @@ struct FormatConfigurationSheet: View {
         .accessibilityValue(allowed ? "Allowed" : "Off")
     }
 
+    /// Leading "—" (none) segment maps to `unit = nil` — dimensionless is the
+    /// default for a new device now (field report: assuming a unit was part
+    /// of what made the strict default reject real displays).
+    private static let noUnitToken = "—"
+
     private func unitControl(_ device: Device) -> some View {
-        SegmentedChoice(options: ["V", "A", "Ω", "°C", "Hz"], selection: device.displayFormat.unit ?? "V", label: { $0 }) { newUnit in
-            adjust(device) { $0.unit = newUnit }
+        let options = [Self.noUnitToken, "V", "A", "Ω", "°C", "Hz"]
+        let selection = device.displayFormat.unit ?? Self.noUnitToken
+        return SegmentedChoice(options: options, selection: selection, label: { $0 }) { newUnit in
+            adjust(device) { $0.unit = newUnit == Self.noUnitToken ? nil : newUnit }
         }
     }
 
     /// Min/max steppers, ±5 per tap. Outward moves (min↓, max↑) are always
     /// allowed; inward moves (min↑, max↓) are clamped to keep `min < max`
     /// with at least a 5-unit gap (mirrors the design prototype's logic).
+    /// Either bound may be `nil` ("—", no range check on that side) — a
+    /// stepper with no configured bound starts from 0, not the spec
+    /// example's ±20, since range checking is opt-in per device now rather
+    /// than assumed by the default format.
     private func rangeStepper(_ device: Device) -> some View {
         let format = device.displayFormat
         let unit = format.unit ?? ""
-        let minValue = format.minimumValue ?? -20
-        let maxValue = format.maximumValue ?? 20
+        let minValue = format.minimumValue
+        let maxValue = format.maximumValue
         return HStack(spacing: 6) {
-            stepButton("−") { adjust(device) { $0.minimumValue = minValue - 5 } }
-            Text(rangeValueString(minValue, unit: unit))
-            stepButton("+") { adjust(device) { $0.minimumValue = min(maxValue - 5, minValue + 5) } }
+            stepButton("−") { adjust(device) { $0.minimumValue = (minValue ?? 0) - 5 } }
+            Text(minValue.map { rangeValueString($0, unit: unit) } ?? "—")
+            stepButton("+") {
+                adjust(device) {
+                    let raised = (minValue ?? 0) + 5
+                    $0.minimumValue = maxValue.map { min($0 - 5, raised) } ?? raised
+                }
+            }
             Text("to").foregroundStyle(Theme.inkMuted)
-            stepButton("−") { adjust(device) { $0.maximumValue = max(minValue + 5, maxValue - 5) } }
-            Text(rangeValueString(maxValue, unit: unit))
-            stepButton("+") { adjust(device) { $0.maximumValue = maxValue + 5 } }
+            stepButton("−") {
+                adjust(device) {
+                    let lowered = (maxValue ?? 0) - 5
+                    $0.maximumValue = minValue.map { max($0 + 5, lowered) } ?? lowered
+                }
+            }
+            Text(maxValue.map { rangeValueString($0, unit: unit) } ?? "—")
+            stepButton("+") { adjust(device) { $0.maximumValue = (maxValue ?? 0) + 5 } }
+            rangeResetButton(device)
         }
         .font(Theme.mono(11, weight: .semibold))
+    }
+
+    /// Resets both bounds to `nil` ("—", range checking off) in one tap.
+    private func rangeResetButton(_ device: Device) -> some View {
+        Button {
+            adjust(device) {
+                $0.minimumValue = nil
+                $0.maximumValue = nil
+            }
+        } label: {
+            Text(Self.noUnitToken)
+                .font(Theme.ui(13, weight: .heavy))
+                .foregroundStyle(Theme.ink)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Theme.heavyRule, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle().inset(by: -15))
+        .accessibilityLabel("Clear valid range")
     }
 
     private func stepButton(_ symbol: String, enabled: Bool = true, action: @escaping () -> Void) -> some View {
@@ -210,7 +309,9 @@ struct FormatConfigurationSheet: View {
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
-        .contentShape(Rectangle().inset(by: -9))
+        // Visual chip stays small; grow the tap target to the required
+        // ≥44 pt without affecting layout (matches closeButton above).
+        .contentShape(Rectangle().inset(by: -15))
     }
 
     // MARK: Helpers
