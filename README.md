@@ -39,3 +39,7 @@ A few principles guide every decision here:
 2. A rejected reading is better than a wrong one. When in doubt, flag it rather than log garbage into someone's dataset.
 3. The more the app knows about an instrument's display, the less it needs to guess.
 4. Processing stays on-device by default. Lab data shouldn't need to leave the room to get read.
+
+## License
+
+DaqPal is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE.md). You're free to use, modify, and share it for any noncommercial purpose — personal projects, education, and research included. Commercial use requires a separate license from the copyright holder, which keeps the door open for commercializing the project later.
