@@ -3,7 +3,10 @@
 //  DAQPal
 //
 
-import AVFoundation
+// AVCaptureSession/AVCaptureDevice predate Sendable auditing; the whole point
+// of this type is to hop session configuration to a private queue, which is
+// Apple's documented safe-usage pattern for these types.
+@preconcurrency import AVFoundation
 import CoreGraphics
 import CoreMedia
 import CoreVideo
