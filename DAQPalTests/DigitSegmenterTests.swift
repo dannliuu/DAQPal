@@ -72,4 +72,15 @@ final class DigitSegmenterTests: XCTestCase {
         let cells = segmenter.digitCells(in: roi, format: format(digitCount: 0, decimalPosition: nil))
         XCTAssertTrue(cells.isEmpty)
     }
+
+    func testCellCount_twelveDigitsEqualWidth() {
+        // The sheet now configures up to 12 digits; the fixed-pitch stub must
+        // still split the ROI into that many equal-width cells.
+        let cells = segmenter.digitCells(in: roi, format: format(digitCount: 12))
+        XCTAssertEqual(cells.count, 12)
+        let expectedWidth = roi.width / 12
+        for cell in cells {
+            XCTAssertEqual(cell.width, expectedWidth, accuracy: 1e-9)
+        }
+    }
 }

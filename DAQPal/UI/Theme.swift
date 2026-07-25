@@ -54,6 +54,7 @@ enum Theme {
     static let rejectedRowBackground = Color(hex: 0xFDEBE7)
     static let acceptedChipBackground = Color(hex: 0xEAF3E2)
     static let acceptedChipForeground = Color(hex: 0x3D5B27)
+    static let rejectedCountText = Color(hex: 0xFF9D80) // recording-strip "REJ" counter text (HTML prototype)
 
     // MARK: Recording
     static let recordRed = Color(hex: 0xD0342C)       // idle "● REC"
@@ -75,6 +76,11 @@ enum Theme {
     static func sectionLabel(_ size: CGFloat = 10) -> Font {
         .system(size: size, weight: .heavy)
     }
+
+    /// Single source of truth for the DAQPAL wordmark's letter-spacing —
+    /// used everywhere the wordmark appears so a future tweak doesn't drift
+    /// across sites.
+    static let wordmarkTracking: CGFloat = 1.2
 }
 
 /// Letter-spaced uppercase section label used across capture and results.

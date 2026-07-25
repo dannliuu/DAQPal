@@ -38,7 +38,7 @@ struct RootView: View {
                     VStack(spacing: 8) {
                         Text("DAQPAL")
                             .font(Theme.ui(15, weight: .heavy))
-                            .tracking(1.5)
+                            .tracking(Theme.wordmarkTracking)
                             .foregroundStyle(Theme.brandYellow)
                         SectionLabel(text: "Visual Data Acquisition", color: .white.opacity(0.55))
                     }

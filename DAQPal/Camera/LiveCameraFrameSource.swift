@@ -20,8 +20,8 @@ import os
 ///
 /// `@unchecked Sendable` justification (required — the instance is shared
 /// between the MainActor-owned `CameraManager` and the capture delegate
-/// queue): the only mutable state is `streams`, and every access goes through
-/// the `OSAllocatedUnfairLock`. Yielded frames follow the linear-ownership
+/// queue): the mutable state is `streams` and `frameTapStore`, each guarded by
+/// its own `OSAllocatedUnfairLock`. Yielded frames follow the linear-ownership
 /// rule documented on `TimestampedFrame`.
 final class LiveCameraFrameSource: NSObject, FrameSource,
                                    AVCaptureVideoDataOutputSampleBufferDelegate,
@@ -35,6 +35,25 @@ final class LiveCameraFrameSource: NSObject, FrameSource,
     }
 
     private let streams = OSAllocatedUnfairLock(initialState: StreamState())
+
+    /// The session-video tee, kept behind its own lock. Separate from `streams`
+    /// so the (trivially `Sendable`) stream state keeps using the checked
+    /// `withLock`; the tap holds a non-`Sendable` closure, so it needs the
+    /// unchecked variant — isolating it avoids infecting the stream state.
+    /// (`uncheckedState:` is required because the stored closure isn't Sendable;
+    /// safety comes from the lock, per the class's `@unchecked Sendable` note.)
+    private let frameTapStore = OSAllocatedUnfairLock<((TimestampedFrame) -> Void)?>(uncheckedState: nil)
+
+    /// Invoked synchronously on the capture queue for EVERY delegate frame,
+    /// upstream of the drop-prone stream yield — the session video recorder
+    /// hooks this so its `.mov` captures every frame, not the OCR-throttled
+    /// subset. Keep the closure cheap (a bare `AVAssetWriterInput.append`).
+    /// Thread-safe: backed by `frameTapStore`, so it can be set from the
+    /// MainActor while the capture queue reads it.
+    var frameTap: ((TimestampedFrame) -> Void)? {
+        get { frameTapStore.withLockUnchecked { $0 } }
+        set { frameTapStore.withLockUnchecked { $0 = newValue } }
+    }
 
     // MARK: FrameSource
 
@@ -67,7 +86,18 @@ final class LiveCameraFrameSource: NSObject, FrameSource,
                        from connection: AVCaptureConnection) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+        let frame = TimestampedFrame(pixelBuffer: pixelBuffer, timestamp: timestamp)
+
+        // Tee to the recorder BEFORE the drop-prone `.bufferingNewest(1)` yield,
+        // so the movie gets every captured frame even when OCR runs behind.
+        // The same frame now fans out to two consumers (recorder + OCR stream);
+        // this stays within `TimestampedFrame`'s ownership rule because both
+        // only READ the buffer (H.264 encode / Vision) — the producer never
+        // mutates it after handoff and concurrent `CVPixelBuffer` reads are safe.
+        let tap = frameTapStore.withLockUnchecked { $0 }
+        tap?(frame)
+
         let continuation = streams.withLock { $0.continuation }
-        continuation?.yield(TimestampedFrame(pixelBuffer: pixelBuffer, timestamp: timestamp))
+        continuation?.yield(frame)
     }
 }

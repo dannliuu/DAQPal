@@ -42,14 +42,16 @@ protocol OCREngine {
 
 /// Facade the measurement pipeline talks to.
 ///
-/// Today it routes every request to `VisionOCR`. Future engines (PaddleOCR via
-/// ONNX, `SevenSegmentRecognizer`, specialized digit models — spec §12–§14)
-/// plug in behind the same `OCREngine` protocol without touching
-/// `MeasurementProcessor`.
+/// The default engine is `DualPassVisionOCR` — Vision `.accurate` and `.fast`
+/// run concurrently and their candidates are merged (`.accurate` preferred,
+/// `.fast` rescues segment glyphs it misses; see that type for the measured
+/// rationale). Future engines (PaddleOCR via ONNX, `SevenSegmentRecognizer`,
+/// specialized digit models — spec §12–§14) plug in behind the same
+/// `OCREngine` protocol without touching `MeasurementProcessor`.
 final class OCRManager: OCREngine {
     private let engine: any OCREngine
 
-    init(engine: any OCREngine = VisionOCR()) {
+    init(engine: any OCREngine = DualPassVisionOCR()) {
         self.engine = engine
     }
 

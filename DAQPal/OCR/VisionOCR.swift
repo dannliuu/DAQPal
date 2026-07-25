@@ -2,13 +2,19 @@
 //  VisionOCR.swift
 //  DAQPal
 //
-//  VNRecognizeTextRequest wrapper (spec §8, Milestone 2). Accurate recognition
-//  level with language correction off: DMM readouts are short digit strings,
-//  and correction would "fix" them into words. `.accurate` (vs `.fast`) costs
-//  more per frame but returns calibrated confidences — `.fast` reports ~0.3
-//  even on clean digits, which dominated the fused measurement confidence and
-//  read as a broken 32% in the UI. Throughput at MVP processing rates is
-//  fine; revisit as a quality/rate knob during OCR benchmarking (spec §14).
+//  VNRecognizeTextRequest wrapper (spec §8, Milestone 2). Language correction is
+//  always off: DMM readouts are short digit strings, and correction would "fix"
+//  them into words.
+//
+//  The recognition level is a constructor parameter (default `.accurate`, so the
+//  shipping default is unchanged). `.accurate` costs ~35× more per frame but
+//  returns calibrated confidences — `.fast` reports ~0.3 even on clean digits,
+//  which once dominated the fused measurement confidence and read as a broken
+//  32% in the UI, so `.fast` output must never be preferred where `.accurate`
+//  produces a reading. The Milestone 9 benchmark (OCR_RESEARCH.md) found `.fast`
+//  nonetheless *recalls* segmented glyphs `.accurate` misses; `DualPassVisionOCR`
+//  exploits that by running a `.fast` instance as a concurrent rescue pass while
+//  keeping `.accurate` preferred for its honest confidences.
 //
 
 import CoreGraphics
@@ -22,10 +28,19 @@ struct VisionOCR: OCREngine {
     /// near-miss readings.
     private static let candidatesPerObservation = 3
 
+    /// The `VNRecognizeTextRequest` recognition level. `.accurate` is the
+    /// shipping default (calibrated confidences); `.fast` trades those for
+    /// latency and segment-glyph recall (see the file header).
+    private let recognitionLevel: VNRequestTextRecognitionLevel
+
+    init(recognitionLevel: VNRequestTextRecognitionLevel = .accurate) {
+        self.recognitionLevel = recognitionLevel
+    }
+
     func recognize(in pixelBuffer: CVPixelBuffer,
                    regionOfInterest: NormalizedROI?) async throws -> [OCRCandidate] {
         let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
+        request.recognitionLevel = recognitionLevel
         request.usesLanguageCorrection = false
         request.automaticallyDetectsLanguage = false
         request.recognitionLanguages = ["en-US"]

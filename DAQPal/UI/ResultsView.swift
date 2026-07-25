@@ -90,7 +90,7 @@ struct ResultsView: View {
             Button {
                 appState.showResults = false
             } label: {
-                Text("‹ Back to Camera")
+                Text("‹ Camera")
                     .font(Theme.ui(12, weight: .heavy))
                     .foregroundStyle(Theme.ink)
                     .padding(.horizontal, 16)
@@ -98,6 +98,7 @@ struct ResultsView: View {
                     .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.heavyRule, lineWidth: 1.5))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Back to camera")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -146,17 +147,54 @@ struct ResultsView: View {
     // MARK: Summary chips
 
     private func summaryChips(_ session: CompletedSession, model: ResultsSessionModel) -> some View {
-        HStack(spacing: 6) {
-            chip("⏱ " + String(format: "%.1fs", session.duration),
-                 background: .white, foreground: Theme.ink, border: Theme.hairline)
-            chip(String(format: "%.1f", session.samplesPerSecond) + " samples/s",
-                 background: .white, foreground: Theme.ink, border: Theme.hairline)
-            chip("✓ \(model.acceptedCount) accepted",
+        VStack(alignment: .leading, spacing: 4) {
+            // Scrolls rather than truncating now that the video-status chip
+            // can push the row past the screen width on narrower devices.
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    chip(String(format: "%.1fs", session.duration),
+                         background: .white, foreground: Theme.ink, border: Theme.heavyRule)
+                    chip(String(format: "%.1f", session.samplesPerSecond) + " samples/s",
+                         background: .white, foreground: Theme.ink, border: Theme.heavyRule)
+                    chip("✓ \(model.acceptedCount) accepted",
+                         background: Theme.acceptedChipBackground, foreground: Theme.acceptedChipForeground,
+                         border: Theme.acceptedChipForeground.opacity(0.25))
+                    chip("✕ \(model.rejectedCount) rejected",
+                         background: Theme.rejectedRowBackground, foreground: Theme.searchingChipForeground,
+                         border: Theme.searchingChipForeground.opacity(0.25))
+                    videoStatusChip
+                }
+            }
+            if case let .failed(message) = appState.videoSaveStatus {
+                Text("Video: \(message)")
+                    .font(Theme.ui(9))
+                    .foregroundStyle(Theme.searchingChipForeground)
+            }
+        }
+    }
+
+    /// Reflects `appState.videoSaveStatus`, written by the capture stack's
+    /// asset-writer tee as it finishes/saves after STOP. No chip for
+    /// `.idle`/`.unavailable`/`.recording` (results only show once a session
+    /// has ended, so `.recording` shouldn't occur here, but is handled the
+    /// same as "nothing to report" for safety).
+    @ViewBuilder
+    private var videoStatusChip: some View {
+        switch appState.videoSaveStatus {
+        case .saving:
+            chip("SAVING VIDEO…", background: .white, foreground: Theme.ink, border: Theme.heavyRule)
+        case .saved:
+            chip("VIDEO IN PHOTOS",
                  background: Theme.acceptedChipBackground, foreground: Theme.acceptedChipForeground,
                  border: Theme.acceptedChipForeground.opacity(0.25))
-            chip("✕ \(model.rejectedCount) rejected",
+                .accessibilityLabel("Session video saved to Photos")
+        case .failed(let message):
+            chip("VIDEO SAVE FAILED",
                  background: Theme.rejectedRowBackground, foreground: Theme.searchingChipForeground,
                  border: Theme.searchingChipForeground.opacity(0.25))
+                .accessibilityValue(message)
+        case .idle, .unavailable, .recording:
+            EmptyView()
         }
     }
 
@@ -204,13 +242,20 @@ struct ResultsView: View {
                     Rectangle()
                         .fill(ResultsSeriesPalette.color(at: index))
                         .frame(width: 10, height: 2)
-                    Text("\(device.name) (\(device.unit ?? "—"))")
+                    Text(deviceLabel(device))
                         .font(Theme.ui(9, weight: .semibold))
                         .foregroundStyle(Theme.inkMuted)
                         .lineLimit(1)
                 }
             }
         }
+    }
+
+    /// "DMM-1 (V)" — the unit suffix is omitted entirely (not shown as "(—)")
+    /// when the device has no configured unit.
+    private func deviceLabel(_ device: Device) -> String {
+        guard let unit = device.unit, !unit.isEmpty else { return device.name }
+        return "\(device.name) (\(unit))"
     }
 
     // MARK: Stats cards
@@ -254,10 +299,11 @@ struct ResultsView: View {
     }
 
     /// "DC" only applies to electrical units — "DMM-1 · V DC" but "DMM-2 · °C".
+    /// No unit ⇒ no trailing suffix at all (not "· —").
     private func deviceSubtitle(_ device: Device) -> String {
-        let unit = device.unit ?? "—"
-        let suffix = (unit == "V" || unit == "A") ? " DC" : ""
-        return "\(device.name) · \(unit)\(suffix)"
+        guard let unit = device.unit, !unit.isEmpty else { return device.name }
+        let suffix = (unit == "V" || unit == "A") ? "\(unit) DC" : unit
+        return "\(device.name) · \(suffix)"
     }
 
     // MARK: Table card
@@ -293,7 +339,7 @@ struct ResultsView: View {
         HStack(spacing: 6) {
             Text("TIME").frame(width: timeColumnWidth, alignment: .leading)
             ForEach(devices) { device in
-                Text("\(device.name) (\(device.unit ?? "—"))")
+                Text(deviceLabel(device))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .lineLimit(1)
                 Text("CONF").frame(width: confColumnWidth, alignment: .leading)

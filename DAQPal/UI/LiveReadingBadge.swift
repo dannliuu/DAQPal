@@ -24,7 +24,7 @@ struct LiveReadingsPanel: View {
                 Spacer(minLength: 8)
                 Text(appState.devices.allSatisfy { $0.displayFormat.constrainToFormat }
                      ? "Apple Vision OCR · constrained"
-                     : "Apple Vision OCR · free numeric")
+                     : "Apple Vision OCR · any number")
                     .font(Theme.ui(10))
                     .foregroundStyle(Theme.inkMuted)
                     .lineLimit(1)
@@ -70,6 +70,12 @@ private struct DeviceReadingCard: View {
                     .truncationMode(.tail)
                 Spacer(minLength: 6)
                 formatButton
+                // Visible remove affordance — the context menu below is easy to
+                // miss (long-press), so multi-device layouts get an explicit
+                // ✕ chip. Hidden for the last device (removal is guarded there).
+                if appState.devices.count > 1 {
+                    removeButton
+                }
             }
             HStack(alignment: .lastTextBaseline, spacing: 4) {
                 Text(valueText)
@@ -101,7 +107,7 @@ private struct DeviceReadingCard: View {
             } label: {
                 Label("Remove \(device.name)", systemImage: "trash")
             }
-            .disabled(appState.devices.count <= 1)
+            .disabled(appState.devices.count <= 1 || appState.isRecording)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilitySummary)
@@ -149,6 +155,30 @@ private struct DeviceReadingCard: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Open display format settings for \(device.name)")
+    }
+
+    /// Hairline-outlined "✕" chip mirroring `formatButton`'s compact styling:
+    /// the visual glyph stays small while `contentShape` grows the tap target
+    /// toward the ≥44 pt minimum. Only shown when more than one device exists.
+    /// Disabled + dimmed while recording (same pattern as the header IMPORT
+    /// chip) — removal would silently drop that device's captured samples.
+    private var removeButton: some View {
+        Button {
+            appState.removeDevice(id: device.id)
+        } label: {
+            Text("✕")
+                .font(Theme.ui(10, weight: .semibold))
+                .foregroundStyle(Theme.inkMuted.opacity(appState.isRecording ? 0.35 : 1))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 1)
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Theme.hairline, lineWidth: 1))
+                // Expands the tap target toward 44pt without growing the
+                // visually compact chip (matches the format-chip pattern).
+                .contentShape(Rectangle().inset(by: -15))
+        }
+        .buttonStyle(.plain)
+        .disabled(appState.isRecording)
+        .accessibilityLabel("Remove \(device.name)")
     }
 
     private var valueText: String {

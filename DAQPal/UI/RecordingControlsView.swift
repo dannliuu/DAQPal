@@ -21,6 +21,7 @@ struct RecordingControlsView: View {
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
             elapsedChip
+            saveVideoToggleChip
             recordButton
             Spacer(minLength: 6)
             metaColumn
@@ -53,6 +54,40 @@ struct RecordingControlsView: View {
         formatElapsed(appState.activeRecording?.elapsed ?? 0)
     }
 
+    /// Mirrors the header's "OCR" debug-toggle chip styling (outlined when
+    /// off, dark fill + yellow text when on). Locked while recording — the
+    /// tee is armed once at `startRecording()`, so changing the toggle
+    /// mid-session wouldn't do anything until the next session anyway.
+    private var saveVideoToggleChip: some View {
+        Button {
+            appState.saveVideoEnabled.toggle()
+        } label: {
+            Text("VIDEO")
+                .font(Theme.ui(9, weight: .heavy))
+                .tracking(0.54)
+                .lineLimit(1)
+                .fixedSize()
+                // Dimming matches the header IMPORT chip's disabled pattern:
+                // foreground opacity only, not the whole chip.
+                .foregroundStyle((appState.saveVideoEnabled ? Theme.brandYellow : Theme.ink)
+                    .opacity(appState.isRecording ? 0.35 : 1))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(appState.saveVideoEnabled ? Theme.ink : Color.clear)
+                )
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Theme.heavyRule, lineWidth: 1))
+                // Chip stays visually compact; the negative inset expands the
+                // tap area to the required ≥44 pt.
+                .contentShape(Rectangle().inset(by: -13))
+        }
+        .buttonStyle(.plain)
+        .disabled(appState.isRecording)
+        .accessibilityLabel("Toggle save video")
+        .accessibilityValue(appState.saveVideoEnabled ? "On" : "Off")
+    }
+
     private var recordButton: some View {
         Button {
             if appState.isRecording {
@@ -70,8 +105,12 @@ struct RecordingControlsView: View {
             }
             .font(Theme.ui(13, weight: .heavy))
             .tracking(0.65)
+            .lineLimit(1)
+            // The label must never wrap into a vertical letter stack when the
+            // footer row gets tight — it wins the space fight instead.
+            .fixedSize()
             .foregroundStyle(.white)
-            .padding(.horizontal, 26)
+            .padding(.horizontal, 18)
             .frame(minHeight: 44)
             .background(
                 RoundedRectangle(cornerRadius: 8)
@@ -79,6 +118,7 @@ struct RecordingControlsView: View {
             )
         }
         .buttonStyle(.plain)
+        .layoutPriority(1)
         .accessibilityLabel("DAQPal record button")
         .accessibilityValue(appState.isRecording ? "Recording, tap to stop" : "Tap to start recording")
         .onAppear { syncPulse() }
@@ -101,6 +141,8 @@ struct RecordingControlsView: View {
             Text("OCR \(rateText(appState.processedFPS))/S")
         }
         .font(Theme.ui(9, weight: .semibold))
+        .lineLimit(1)
+        .minimumScaleFactor(0.7)
         .foregroundStyle(Theme.inkMuted)
         .accessibilityElement(children: .combine)
     }
@@ -161,9 +203,11 @@ struct RecordingStripView: View {
             Text("\(session.sampleCount) SAMPLES")
                 .foregroundStyle(Theme.chrome.opacity(0.6))
             Text("\(session.rejectedCount) REJ")
-                // Design handoff recording-strip "rejected" text color
-                // (#FF9D80); not one of Theme's named chip tokens.
-                .foregroundStyle(Color(hex: 0xFF9D80))
+                .foregroundStyle(Theme.rejectedCountText)
+            if appState.videoSaveStatus == .recording {
+                Text("● VIDEO")
+                    .foregroundStyle(Theme.spark2)
+            }
             Spacer(minLength: 6)
             if showRejectionFlash {
                 rejectionFlashChip

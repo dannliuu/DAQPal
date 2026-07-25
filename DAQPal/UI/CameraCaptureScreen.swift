@@ -183,7 +183,7 @@ struct ViewportBrandMark: View {
         VStack(spacing: 4) {
             Text("DAQPAL")
                 .font(Theme.ui(15, weight: .heavy))
-                .tracking(1.2)
+                .tracking(Theme.wordmarkTracking)
                 .foregroundStyle(Theme.brandYellow)
             SectionLabel(text: "VISUAL DATA ACQUISITION", size: 8, color: .white.opacity(0.55))
         }

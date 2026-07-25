@@ -249,4 +249,40 @@ final class FormatValidatorTests: XCTestCase {
         XCTAssertEqual(validator.value(from: "AUTO 12.3", format: lenient),
                        FormatValidator.value(from: "AUTO 12.3", format: lenient))
     }
+
+    // MARK: - Larger strict grammar (10-digit / decimalPosition 4)
+    //
+    // The strict parse has no built-in digit-count ceiling (the 4/5/6 limit was
+    // only the old sheet UI), so a high-count format must enforce its grammar
+    // exactly the way the 5-digit case does.
+
+    /// 4 integer digits + 6 fraction digits (digitCount 10 − decimalPosition 4).
+    private let tenDigitFourDecimal = DisplayFormat(digitCount: 10, decimalPosition: 4,
+                                                    signAllowed: true, unit: nil,
+                                                    minimumValue: nil, maximumValue: nil)
+
+    func testLargeFormat_exactCountValid() {
+        XCTAssertEqual(FormatValidator.parse("1000.500000", format: tenDigitFourDecimal), .valid(1000.5))
+    }
+
+    func testLargeFormat_offByOneFractionInvalid() {
+        // 5 fraction digits where the grammar requires exactly 6.
+        guard case .invalid = FormatValidator.parse("1000.50000", format: tenDigitFourDecimal) else {
+            return XCTFail("expected invalid: fraction digit count must equal digitCount − decimalPosition")
+        }
+    }
+
+    func testLargeFormat_offByOneIntegerInvalid() {
+        // 5 integer digits exceeds decimalPosition == 4.
+        guard case .invalid = FormatValidator.parse("12345.567890", format: tenDigitFourDecimal) else {
+            return XCTFail("expected invalid: integer part longer than decimalPosition")
+        }
+    }
+
+    func testLargeFormat_leadingBlankAllowanceApplies() {
+        // Fewer leading integer digits are accepted (leading-blanked display),
+        // the same allowance the 5-digit format relies on.
+        XCTAssertEqual(FormatValidator.parse("5.500000", format: tenDigitFourDecimal), .valid(5.5))
+        XCTAssertEqual(FormatValidator.parse("-5.500000", format: tenDigitFourDecimal), .valid(-5.5))
+    }
 }

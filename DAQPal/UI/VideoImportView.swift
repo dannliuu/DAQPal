@@ -25,6 +25,10 @@ struct VideoImportView: View {
 
     @State private var model: VideoImportModel?
     @State private var isPickerPresented = false
+    /// Set when picking/loading a file fails before a model reaches its own
+    /// error phase (copy failure, no device). Surfaced inline on the landing
+    /// panel so a failed load returns the user to "CHOOSE VIDEO FILE".
+    @State private var landingError: String?
 
     private static let movieTypes: [UTType] = [.movie, .quickTimeMovie, .mpeg4Movie]
 
@@ -37,11 +41,8 @@ struct VideoImportView: View {
             content
         }
         .background(Theme.chrome.ignoresSafeArea())
-        .onAppear {
-            // No model yet ⇒ this is a fresh presentation of the flow;
-            // go straight to the system picker (contract step 1).
-            if model == nil { isPickerPresented = true }
-        }
+        // No auto-presented picker: the flow opens on the landing panel and the
+        // user taps "CHOOSE VIDEO FILE" to present the importer explicitly.
         .fileImporter(isPresented: $isPickerPresented,
                      allowedContentTypes: Self.movieTypes,
                      onCompletion: handlePicked)
@@ -60,7 +61,7 @@ struct VideoImportView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("DAQPAL")
                     .font(Theme.ui(15, weight: .heavy))
-                    .tracking(-0.15)
+                    .tracking(Theme.wordmarkTracking)
                     .foregroundStyle(Theme.ink)
                 SectionLabel(text: "IMPORT VIDEO", size: 8)
             }
@@ -117,14 +118,18 @@ struct VideoImportView: View {
             case .finished:
                 finishedState
             case .failed(let message):
-                failedState(model, message: message)
+                // A failed load/process returns to the landing panel with the
+                // error inline, rather than a separate error screen — one
+                // consistent "choose a file" surface for both the first open
+                // and any retry.
+                landingState(error: message)
             }
         } else {
-            pickerState
+            landingState(error: landingError)
         }
     }
 
-    private var pickerState: some View {
+    private func landingState(error: String?) -> some View {
         VStack(spacing: 14) {
             SectionLabel(text: "SELECT A VIDEO", size: 12, color: Theme.ink)
             Text("Pick a recorded instrument video — normal speed or slow-motion — to process offline.")
@@ -132,10 +137,14 @@ struct VideoImportView: View {
                 .foregroundStyle(Theme.inkMuted)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
+            if let error {
+                errorChip(error)
+                    .padding(.horizontal, 24)
+            }
             Button {
                 isPickerPresented = true
             } label: {
-                Text("CHOOSE FILE")
+                Text("CHOOSE VIDEO FILE")
                     .font(Theme.ui(12, weight: .heavy))
                     .tracking(0.5)
                     .foregroundStyle(Theme.ink)
@@ -216,7 +225,7 @@ struct VideoImportView: View {
                 .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Theme.heavyRule, lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .contentShape(Rectangle().inset(by: -8))
+        .contentShape(Rectangle().inset(by: -15))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityLabel("Speed \(preset.label)")
     }
@@ -308,45 +317,7 @@ struct VideoImportView: View {
         return "FRAMES \(processed)"
     }
 
-    // MARK: Failed
-
-    private func failedState(_ model: VideoImportModel, message: String) -> some View {
-        VStack(spacing: 16) {
-            errorChip(message)
-            HStack(spacing: 10) {
-                Button {
-                    self.model = nil
-                    isPickerPresented = true
-                } label: {
-                    Text("TRY ANOTHER FILE")
-                        .font(Theme.ui(12, weight: .heavy))
-                        .tracking(0.5)
-                        .foregroundStyle(Theme.ink)
-                        .frame(maxWidth: .infinity)
-                        .frame(minHeight: 44)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.brandYellow))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Try another file")
-
-                Button {
-                    dismiss()
-                } label: {
-                    Text("CLOSE")
-                        .font(Theme.ui(12, weight: .heavy))
-                        .tracking(0.5)
-                        .foregroundStyle(Theme.ink)
-                        .frame(maxWidth: .infinity)
-                        .frame(minHeight: 44)
-                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.heavyRule, lineWidth: 1.5))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Close video import")
-            }
-        }
-        .padding(.horizontal, 24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
+    // MARK: Error surface
 
     private func errorChip(_ message: String) -> some View {
         Text("✕ " + message)
@@ -364,10 +335,11 @@ struct VideoImportView: View {
     private func handlePicked(_ result: Result<URL, Error>) {
         switch result {
         case .failure:
-            // User cancelled the picker, or the system reported a failure —
-            // contract: cancel/failure at this stage dismisses the flow.
-            dismiss()
+            // User cancelled the picker (or the system reported a failure) —
+            // return to the landing panel; do NOT dismiss the whole cover.
+            break
         case .success(let url):
+            landingError = nil
             Task { await beginImport(from: url) }
         }
     }
@@ -382,7 +354,9 @@ struct VideoImportView: View {
             if didStartAccess { url.stopAccessingSecurityScopedResource() }
         }
         guard let device = appState.devices.first else {
-            dismiss()
+            // No device to import into — surface it on the landing panel
+            // instead of silently tearing the flow down.
+            landingError = "No device configured to import into."
             return
         }
         do {
@@ -391,7 +365,10 @@ struct VideoImportView: View {
             model = importModel
             await importModel.loadMetadata()
         } catch {
-            dismiss()
+            // Copy/open failure before a model exists: return to the landing
+            // panel with the reason shown inline.
+            model = nil
+            landingError = "Couldn't open this video: \(error.localizedDescription)"
         }
     }
 
@@ -460,6 +437,12 @@ private struct ImportROIWindow: View {
 
     @State private var windowDragAnchor: CGRect?
     @State private var resizeAnchor: CGRect?
+    /// View-local rect while a move or resize gesture is active; `currentRect`
+    /// renders from this instead of `model.roi` so the window tracks the
+    /// finger with no round-trip through `VideoImportModel` per gesture tick
+    /// (mirrors `ROISelectionOverlay`'s drag-latency fix). Nil whenever no
+    /// gesture is active, at which point rendering falls back to `model.roi`.
+    @State private var liveDragRect: CGRect?
 
     private static let handleVisualSize: CGFloat = 8
     private static let handleHitSize: CGFloat = 44
@@ -477,7 +460,8 @@ private struct ImportROIWindow: View {
     }
 
     private var currentRect: CGRect {
-        mapper.viewRect(fromNormalized: model.roi ?? ghostNormalizedROI)
+        if let liveDragRect { return liveDragRect }
+        return mapper.viewRect(fromNormalized: model.roi ?? ghostNormalizedROI)
     }
 
     var body: some View {
@@ -553,12 +537,22 @@ private struct ImportROIWindow: View {
             .onChanged { value in
                 let anchor = windowDragAnchor ?? currentRect
                 windowDragAnchor = anchor
-                var moved = anchor.offsetBy(dx: value.translation.width, dy: value.translation.height)
-                moved.origin.x = min(max(moved.origin.x, 0), max(0, containerSize.width - moved.width))
-                moved.origin.y = min(max(moved.origin.y, 0), max(0, containerSize.height - moved.height))
-                commit(moved)
+                liveDragRect = clampedMove(from: anchor, translation: value.translation)
             }
-            .onEnded { _ in windowDragAnchor = nil }
+            .onEnded { value in
+                if let anchor = windowDragAnchor {
+                    commit(clampedMove(from: anchor, translation: value.translation))
+                }
+                windowDragAnchor = nil
+                liveDragRect = nil
+            }
+    }
+
+    private func clampedMove(from anchor: CGRect, translation: CGSize) -> CGRect {
+        var moved = anchor.offsetBy(dx: translation.width, dy: translation.height)
+        moved.origin.x = min(max(moved.origin.x, 0), max(0, containerSize.width - moved.width))
+        moved.origin.y = min(max(moved.origin.y, 0), max(0, containerSize.height - moved.height))
+        return moved
     }
 
     private func resizeGesture(for h: Handle) -> some Gesture {
@@ -566,46 +560,56 @@ private struct ImportROIWindow: View {
             .onChanged { value in
                 let anchor = resizeAnchor ?? currentRect
                 resizeAnchor = anchor
-                var left = anchor.minX, right = anchor.maxX
-                var top = anchor.minY, bottom = anchor.maxY
-                switch h {
-                case .topLeft:
-                    left += value.translation.width
-                    top += value.translation.height
-                case .topRight:
-                    right += value.translation.width
-                    top += value.translation.height
-                case .bottomLeft:
-                    left += value.translation.width
-                    bottom += value.translation.height
-                case .bottomRight:
-                    right += value.translation.width
-                    bottom += value.translation.height
-                }
-                left = max(0, left)
-                top = max(0, top)
-                right = min(containerSize.width, right)
-                bottom = min(containerSize.height, bottom)
-                if right - left < Self.minimumViewSize {
-                    switch h {
-                    case .topLeft, .bottomLeft: left = right - Self.minimumViewSize
-                    default: right = left + Self.minimumViewSize
-                    }
-                }
-                if bottom - top < Self.minimumViewSize {
-                    switch h {
-                    case .topLeft, .topRight: top = bottom - Self.minimumViewSize
-                    default: bottom = top + Self.minimumViewSize
-                    }
-                }
-                commit(CGRect(x: left, y: top, width: right - left, height: bottom - top))
+                liveDragRect = resizedRect(handle: h, anchor: anchor, translation: value.translation)
             }
-            .onEnded { _ in resizeAnchor = nil }
+            .onEnded { value in
+                if let anchor = resizeAnchor {
+                    commit(resizedRect(handle: h, anchor: anchor, translation: value.translation))
+                }
+                resizeAnchor = nil
+                liveDragRect = nil
+            }
+    }
+
+    private func resizedRect(handle h: Handle, anchor: CGRect, translation: CGSize) -> CGRect {
+        var left = anchor.minX, right = anchor.maxX
+        var top = anchor.minY, bottom = anchor.maxY
+        switch h {
+        case .topLeft:
+            left += translation.width
+            top += translation.height
+        case .topRight:
+            right += translation.width
+            top += translation.height
+        case .bottomLeft:
+            left += translation.width
+            bottom += translation.height
+        case .bottomRight:
+            right += translation.width
+            bottom += translation.height
+        }
+        left = max(0, left)
+        top = max(0, top)
+        right = min(containerSize.width, right)
+        bottom = min(containerSize.height, bottom)
+        if right - left < Self.minimumViewSize {
+            switch h {
+            case .topLeft, .bottomLeft: left = right - Self.minimumViewSize
+            default: right = left + Self.minimumViewSize
+            }
+        }
+        if bottom - top < Self.minimumViewSize {
+            switch h {
+            case .topLeft, .topRight: top = bottom - Self.minimumViewSize
+            default: bottom = top + Self.minimumViewSize
+            }
+        }
+        return CGRect(x: left, y: top, width: right - left, height: bottom - top)
     }
 
     /// Converts a view-space rect back to normalized ROI space and writes it
     /// straight to `model.roi` — no `AppState` involved, per the import
-    /// flow's isolation rule.
+    /// flow's isolation rule. Called once, from `.onEnded`.
     private func commit(_ viewRect: CGRect) {
         model.roi = mapper.normalizedRect(fromViewRect: viewRect).clamped()
     }

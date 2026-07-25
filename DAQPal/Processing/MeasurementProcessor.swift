@@ -19,8 +19,16 @@
 //
 //  Per frame, per configured device:
 //    crop → OCR (whole-ROI) → best numeric candidate → FormatValidator →
-//    PhysicalValidator → TemporalFilter → ConfidenceEngine → Measurement.
+//    [classical seven-segment cross-check] → PhysicalValidator →
+//    TemporalFilter → ConfidenceEngine → Measurement.
 //  Any crop/text failure becomes a rejected Measurement (never a throw).
+//
+//  The cross-check (OCR_RESEARCH.md Phase 4) runs in the concurrent recognition
+//  stage on CONSTRAINED devices only: a deterministic `SevenSegmentSampler`
+//  reads the same ROI independently and its verdict is fused as a
+//  corroborate-or-veto factor (never inflating) in `ConfidenceEngine`. It
+//  abstains (neutral) whenever it cannot cleanly read every digit cell — so on
+//  non-segment glyphs (raster/OLED) it never manufactures a disagreement.
 //
 
 import CoreVideo
@@ -135,6 +143,17 @@ actor MeasurementProcessor {
 
     // MARK: - Recognition stage (concurrent, pure)
 
+    /// The classical seven-segment cross-check for one whole-ROI reading,
+    /// carried alongside the parsed value and resolved into a `CrossCheckOutcome`
+    /// at finalize time (agreement needs the OCR value to compare against).
+    /// `.abstained` whenever the sampler could not cleanly read every digit
+    /// cell, the format is unconstrained, or the digit-level path was used —
+    /// abstention is neutral, never a veto.
+    private enum SamplerCrossCheck: Sendable {
+        case abstained
+        case read(value: Double, confidence: Float)
+    }
+
     /// What recognition produced for one device, before any validator state is
     /// consulted — lets the concurrent stage stay free of actor-state access.
     private enum RecognitionOutcome {
@@ -142,7 +161,8 @@ actor MeasurementProcessor {
         case ambiguous(rawText: String?, digitConfidences: [Float], debug: String?)
         case invalidFormat(rawText: String?, digitConfidences: [Float]?, debug: String?)
         case parsed(value: Double, ocrConfidence: Float, rawText: String,
-                    digitConfidences: [Float]?, boundingBox: NormalizedROI?, debug: String?)
+                    digitConfidences: [Float]?, boundingBox: NormalizedROI?,
+                    samplerCrossCheck: SamplerCrossCheck, debug: String?)
     }
 
     private static func recognize(config: DeviceRecognitionConfig,
@@ -195,11 +215,22 @@ actor MeasurementProcessor {
         guard let chosen else {
             return .invalidFormat(rawText: top.text, digitConfidences: nil, debug: debug)
         }
+
+        // Classical seven-segment cross-check — an independent, ML-free reader of
+        // the SAME frame, fused later as a corroborate-or-veto factor (never
+        // inflating). Constrained formats only: an unconstrained device has no
+        // digit grammar to segment against, so the sampler cannot be scored and
+        // abstains (neutral).
+        let crossCheck: SamplerCrossCheck = format.constrainToFormat
+            ? samplerCrossCheck(config: config, frame: frame)
+            : .abstained
+
         return .parsed(value: chosen.value,
                        ocrConfidence: chosen.candidate.confidence,
                        rawText: chosen.candidate.text,
                        digitConfidences: nil,
                        boundingBox: chosen.candidate.boundingBox,
+                       samplerCrossCheck: crossCheck,
                        debug: debug)
     }
 
@@ -235,11 +266,14 @@ actor MeasurementProcessor {
         guard case .valid(let value) = FormatValidator.value(from: text, format: format) else {
             return .invalidFormat(rawText: text, digitConfidences: confidences, debug: debug)
         }
+        // This path already consumed the digit cells the sampler would read;
+        // cross-checking it against itself would be circular, so it abstains.
         return .parsed(value: value,
                        ocrConfidence: meanConfidence,
                        rawText: text,
                        digitConfidences: confidences,
                        boundingBox: nil,
+                       samplerCrossCheck: .abstained,
                        debug: debug)
     }
 
@@ -264,14 +298,16 @@ actor MeasurementProcessor {
                               unit: format.unit, rawText: rawText,
                               digitConfidences: digitConfidences),
                     debug, nil)
-        case .parsed(let value, let ocrConfidence, let rawText, let digitConfidences, let boundingBox, let debug):
+        case .parsed(let value, let ocrConfidence, let rawText, let digitConfidences, let boundingBox, let samplerCrossCheck, let debug):
+            let crossCheck = Self.crossCheckOutcome(samplerCrossCheck, ocrValue: value, format: format)
             let measurement = finalize(value: value,
                                        ocrConfidence: ocrConfidence,
                                        rawText: rawText,
                                        format: format,
                                        deviceID: config.id,
                                        timestamp: timestamp,
-                                       digitConfidences: digitConfidences)
+                                       digitConfidences: digitConfidences,
+                                       crossCheck: crossCheck)
             return (measurement, debug, boundingBox)
         }
     }
@@ -285,7 +321,8 @@ actor MeasurementProcessor {
                           format: DisplayFormat,
                           deviceID: UUID,
                           timestamp: TimeInterval,
-                          digitConfidences: [Float]?) -> Measurement {
+                          digitConfidences: [Float]?,
+                          crossCheck: CrossCheckOutcome) -> Measurement {
         let physicalRejection = physicalValidators[deviceID]?.validate(value: value, timestamp: timestamp)
         let temporal = temporalFilters[deviceID]?.evaluate(value: value)
             ?? TemporalFilter.Evaluation(consistency: 1, rejected: false)
@@ -299,12 +336,81 @@ actor MeasurementProcessor {
                                                 physicalRejection: physicalRejection,
                                                 temporalConsistency: temporal.consistency,
                                                 temporalRejected: temporal.rejected,
+                                                crossCheck: crossCheck,
                                                 digitConfidences: digitConfidences)
 
         if measurement.accepted {
             physicalValidators[deviceID]?.recordAccepted(value: value, timestamp: timestamp)
         }
         return measurement
+    }
+
+    // MARK: - Cross-check (classical seven-segment, pure)
+
+    /// Classical seven-segment cross-check over the whole ROI (constrained
+    /// formats only). Pure — reads the shared frame, touches no actor state.
+    ///
+    /// Splits the ROI into fixed-pitch cells (`DigitSegmenter`) and decodes each
+    /// with the deterministic `SevenSegmentSampler`. A leading '-' cell is taken
+    /// as the sign when the format allows it; every remaining cell must decode to
+    /// a clean 0–9 digit — ANY blank/ambiguous/dash-in-body cell makes the
+    /// sampler ABSTAIN rather than guess (so it can only corroborate or veto,
+    /// never invent a disagreement). The assembled digits are decimal-inserted
+    /// per the format and validated strictly; a parse failure also abstains.
+    /// Confidence is the weakest per-cell decision that was consumed.
+    private static func samplerCrossCheck(config: DeviceRecognitionConfig,
+                                          frame: TimestampedFrame) -> SamplerCrossCheck {
+        let format = config.format
+        let cells = DigitSegmenter().digitCells(in: config.roi, format: format)
+        guard !cells.isEmpty else { return .abstained }
+        let readings = SevenSegmentSampler().readDigits(in: frame.pixelBuffer, cells: cells)
+        guard readings.count == cells.count else { return .abstained }
+
+        var body = readings[...]
+        var negative = false
+        var minConfidence: Float = 1
+        if format.signAllowed, let first = body.first, first.digit == "-" {
+            negative = true
+            minConfidence = min(minConfidence, first.confidence)
+            body = body.dropFirst()
+        }
+
+        var digits = ""
+        for reading in body {
+            guard let digit = reading.digit, ("0"..."9").contains(digit) else {
+                return .abstained
+            }
+            digits.append(digit)
+            minConfidence = min(minConfidence, reading.confidence)
+        }
+        guard !digits.isEmpty else { return .abstained }
+
+        let reconstructed = reconstruct(digits: digits, format: format)
+        let text = negative ? "-" + reconstructed : reconstructed
+        guard case .valid(let value) = FormatValidator.parse(text, format: format) else {
+            return .abstained
+        }
+        return .read(value: value, confidence: minConfidence)
+    }
+
+    /// Resolves a sampler cross-check against the OCR value into the
+    /// `CrossCheckOutcome` the confidence engine consumes. "Agreement" is
+    /// equality within half a least-significant-digit step of the display's
+    /// resolution (`fractionDigits`); anything else is a disagreement carrying
+    /// the sampler's own confidence.
+    private static func crossCheckOutcome(_ sampler: SamplerCrossCheck,
+                                          ocrValue: Double,
+                                          format: DisplayFormat) -> CrossCheckOutcome {
+        switch sampler {
+        case .abstained:
+            return .notAvailable
+        case .read(let samplerValue, let confidence):
+            let halfLSD = 0.5 * pow(10.0, Double(-format.fractionDigits))
+            if abs(ocrValue - samplerValue) <= halfLSD {
+                return .agrees(samplerConfidence: confidence)
+            }
+            return .disagrees(samplerConfidence: confidence, samplerValue: samplerValue)
+        }
     }
 
     // MARK: - Helpers

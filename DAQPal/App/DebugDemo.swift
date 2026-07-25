@@ -25,6 +25,14 @@ enum DebugDemo {
             appState.updateDevice(device)
         }
 
+        if args.contains("-daqpal-save-video") {
+            appState.saveVideoEnabled = true
+        }
+
+        if args.contains("-daqpal-format-sheet") {
+            appState.formatSheetDeviceID = appState.devices.first?.id
+        }
+
         if args.contains("-daqpal-demo-results") {
             appState.completedSession = makeDemoSession()
             appState.showResults = true

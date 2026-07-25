@@ -36,7 +36,6 @@ enum CSVExporter {
 
     private static func singleDeviceCSV(session: CompletedSession, device: Device) -> String {
         var lines = ["timestamp,value,unit,confidence,accepted,rejection_reason"]
-        let fractionDigits = device.displayFormat.fractionDigits
         for sample in session.samples {
             let time = formatSeconds(session.relativeTime(sample.timestamp))
             guard let reading = sample.readings[device.id] else {
@@ -46,7 +45,7 @@ enum CSVExporter {
                 lines.append("\(time),,,,false,")
                 continue
             }
-            let value = formatValue(reading.value, fractionDigits: fractionDigits)
+            let value = formatValue(reading.value, format: device.displayFormat)
             let unit = reading.unit ?? device.unit ?? ""
             let confidence = formatConfidence(reading.confidence)
             let accepted = reading.accepted ? "true" : "false"
@@ -76,7 +75,7 @@ enum CSVExporter {
                 if let reading = sample.readings[device.id] {
                     // Value is logged even when rejected (traceability); only a
                     // non-finite value (unparseable OCR) leaves the cell empty.
-                    fields.append(formatValue(reading.value, fractionDigits: device.displayFormat.fractionDigits))
+                    fields.append(formatValue(reading.value, format: device.displayFormat))
                     fields.append(formatConfidence(reading.confidence))
                     fields.append(reading.accepted ? "1" : "0")
                 } else {
@@ -100,9 +99,18 @@ enum CSVExporter {
         String(format: "%.3f", confidence)
     }
 
-    private static func formatValue(_ value: Double, fractionDigits: Int) -> String {
+    /// Formats a value for a CSV cell. Constrained devices keep the exact
+    /// fixed-`fractionDigits` rendering (schema stability); unconstrained
+    /// (Mode 3) devices route through `DisplayFormat.naturalString` so the
+    /// exported number matches what the user saw on screen (trailing zeros
+    /// trimmed, integers without a decimal point) instead of being padded to
+    /// the seed format's digit count. A non-finite value leaves the cell empty.
+    private static func formatValue(_ value: Double, format: DisplayFormat) -> String {
         guard value.isFinite else { return "" }
-        return String(format: "%.\(fractionDigits)f", value)
+        if format.constrainToFormat {
+            return String(format: "%.\(format.fractionDigits)f", value)
+        }
+        return DisplayFormat.naturalString(value)
     }
 
     /// Header-safe unit token, e.g. `Ω` → `ohm`, `°C` → `degC`.

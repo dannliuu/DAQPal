@@ -182,6 +182,77 @@ Recording: AppState.startRecording → RecordingSession (append-only, keeps reje
   Suite: 129 / 0 / 2. Known tradeoffs: unconstrained mode has no range ⇒ physical
   gates inactive until configured; `isEditingROI` is global, so dragging one window
   pauses tracking for all devices during the gesture.
+- ✅ Session video recording (2026-07-23): REC now optionally tees every capture frame
+  into an `AVAssetWriter` (`SessionVideoRecorder`, H.264 `.mov`, lazy writer sized from
+  the first frame, session started at its timestamp so the movie timeline aligns with the
+  CSV clock) via a `frameTap` on `LiveCameraFrameSource`'s delegate path — **upstream of
+  the OCR stream's drop-late backpressure**, so the movie gets every captured frame even
+  when recognition falls behind. Off by default behind the footer "🎥 SAVE" toggle
+  (storage/battery cost is an explicit choice). On STOP the file saves to Photos under
+  **add-only** authorization and the temp file is deleted; results screen shows
+  saving/saved/failed status. The Simulator synthetic path is teed too, so the feature is
+  end-to-end verifiable without hardware (proven: recorded synthetic session →
+  "🎥 IN PHOTOS" chip with `simctl privacy grant photos-add`).
+  **TCC lesson (crash found & fixed in Simulator verification):** the planned "DAQPal"
+  album targeting was removed — fetching/creating a named album is a library READ
+  requiring full `NSPhotoLibraryUsageDescription`/`.readWrite`; attempting it under
+  add-only aborts the app with a TCC privacy violation. Videos land in Recents; an album
+  needs the heavier permission and is deliberately deferred. Also fixed: footer layout
+  squeeze (STOP button wrapped into a vertical letter stack once the toggle chip joined
+  the row — record button now has `fixedSize` + layout priority). Saved sessions double
+  as re-processable IMPORT fixtures and future `dmm_001.mov` ground-truth material
+  (spec §30–31). Suite: 132 / 0 / 2.
+- ✅ OCR enhancement Phases 0–1 (2026-07-23, per OCR_RESEARCH.md): DSEG 7/14-segment
+  fonts bundled (OFL-1.1 + license); `SyntheticDisplayGenerator` (test target: 4 glyph
+  styles incl. programmatic 5×7 dot-matrix, deterministic seeded augmentation per display
+  tech); `RecognitionBenchmark` + `OCRBenchmarkTests` (Milestone 9 harness — first
+  MEASURED numbers recorded in OCR_RESEARCH.md: Vision .accurate 93.8% sans vs 14.6%
+  seven-seg vs 0% dot-matrix; .fast beats .accurate on segment glyphs at 1/35th latency);
+  `TrainingDataHarvester` (validation-gated pseudo-label crops + labels.csv);
+  `SevenSegmentSampler` (deterministic classical reader, 10/10 clean digits both
+  polarities — Phase 4 fusion pending). Phase 0 spike ran for real (rapidocr/PP-OCRv3):
+  ~12% on DSEG vs 38% sans control ⇒ the stock-model bridge is dead; go straight to
+  trained models. Bug found & fixed during integration: the generator double-flipped its
+  buffers (base context flip + a second flip in the buffer blit) — caught because the
+  segment sampler decoded '2' as '5' (exact vertical-mirror patterns), confirmed by a
+  raw-row ASCII dump, fixed by removing the second flip. Note: the two AVAssetWriter
+  video tests can flake under parallel test clones (VideoToolbox contention) — they pass
+  serially; treat parallel-run failures of exactly those two as retry-first.
+  Suite: 162 / 0 / 2 (+ the 89 s benchmark suite, run on demand).
+- ✅ Training-free OCR round + consistency round (2026-07-23, both recovered from a
+  mid-run usage-limit interruption via workflow resume; the "unbuildable" state was one
+  missing `import Vision`):
+  (1) **Dual-pass engine shipped** — `OCRManager` defaults to `DualPassVisionOCR`
+  (.accurate preferred + concurrent .fast rescue). MEASURED on the M9 benchmark:
+  seven-segment 14.6%→41.7%, fourteen-segment 2.1%→14.6%, overall 27.6%→37.5%, sans
+  unchanged 93.8%, latency +12 ms. (2) **Sampler fusion shipped** — classical
+  seven-segment cross-check in `ConfidenceEngine` (`CrossCheckOutcome`): confident
+  disagreement rejects as AMBIGUOUS_DIGIT, weak disagreement depresses confidence,
+  abstains on unconstrained formats/non-segment glyphs/negative readings (fixed-pitch
+  segmenter consumes the sign cell — documented limit). (3) **User-reported UX fixes** —
+  visible per-card ✕ device removal (+ data-loss guard: removal now blocked mid-recording,
+  since a removed device's captured samples vanished from the finished session);
+  natural value formatting for unconstrained devices ("230", not "230.000" — UI and CSV);
+  video import no longer auto-opens the picker (explicit CHOOSE VIDEO FILE landing;
+  cancel returns there). (4) **Consistency audit** (3 scanners + adversarial verify:
+  10 confirmed / 9 refuted): import-ROI drag-lag regression fixed (buffered gestures);
+  emoji chips → monochrome text glyphs per the handoff's icon rule; single wordmark
+  tracking token; unified hit-target insets (−15), outlined-chip borders (heavyRule),
+  missing-unit convention (omit), disabled-chip dimming, toggle a11y grammar; one naming
+  scheme for unconstrained mode ("Any number — unconstrained" / "ANY" — "Mode 3"/"free
+  numeric" jargon removed from UI); DONE button no longer claims "CONSTRAINED" in ANY
+  mode; "+ ADD" dims at the cap instead of vanishing. Suite: 190 effective passes / 0
+  real failures / 2 fixture-skips (the two AVAssetWriter tests remain parallel-clone
+  flaky — pass serially, retry-first policy stands). Benchmark suite: 3 engines, 165 s,
+  run on demand.
+- ✅ Arbitrary digit counts (2026-07-23): the format sheet's DIGITS control is now a
+  −/+ stepper clamped to `DisplayFormat.digitCountRange` (1…12 — a UI bound only; the
+  model/validator/segmenter are count-agnostic) instead of the handoff prototype's
+  segmented 4/5/6. The DECIMAL AFTER DIGIT row now also exposes the model's
+  integer-display mode (`decimalPosition = nil`) via the "—" convention ("−" below
+  position 1 → integer; digits == 1 forces it). Pattern preview scales down for wide
+  patterns. 14 new tests across 1-digit/10-4/12-11/integer layouts. Suite: 202 effective
+  passes / 0 real failures / 2 fixture-skips.
 - ⬜ Remaining: import-flow Simulator walkthrough (file picker is hard to script);
-  physical-device validation (camera, real-DMM OCR, real iPhone slo-mo footage) — the
-  gates the Simulator cannot cover.
+  physical-device validation (camera, real-DMM OCR, real iPhone slo-mo footage, real
+  video-recording thermals) — the gates the Simulator cannot cover.

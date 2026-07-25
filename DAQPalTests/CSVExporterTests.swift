@@ -79,7 +79,9 @@ final class CSVExporterTests: XCTestCase {
         let fields = lines[1].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
         // timestamp,value,unit,confidence,accepted,rejection_reason
         XCTAssertEqual(fields[2], "", "dimensionless device writes an empty unit field")
-        XCTAssertEqual(fields[1], "12.300") // unconstrained default: 3 fraction digits
+        // Unconstrained devices export naturally (matches the on-screen value):
+        // trailing zeros trimmed, so 12.3 is "12.3", not the seed 5/2 "12.300".
+        XCTAssertEqual(fields[1], "12.3")
     }
 
     // MARK: - Multi-device schema
@@ -169,7 +171,7 @@ final class CSVExporterTests: XCTestCase {
                        "timestamp_s,dmm1_value,dmm1_confidence,dmm1_valid,dmm2_value_V,dmm2_confidence,dmm2_valid")
         // Value/valid columns still align despite the dropped suffix.
         let fields = lines[1].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
-        XCTAssertEqual(fields[1], "12.300") // dmm1 value (unconstrained: 3 fraction digits)
+        XCTAssertEqual(fields[1], "12.3")   // dmm1 value (unconstrained: natural, trimmed)
         XCTAssertEqual(fields[3], "1")      // dmm1 valid
         XCTAssertEqual(fields[4], "")       // dmm2 had no reading this row
         XCTAssertEqual(fields[6], "0")      // dmm2 valid

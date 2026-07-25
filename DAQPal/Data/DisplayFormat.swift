@@ -27,6 +27,14 @@ struct DisplayFormat: Codable, Equatable, Hashable, Sendable {
     /// action in the format sheet.
     var constrainToFormat: Bool = true
 
+    /// Digit-count bound for the format sheet's stepper ONLY — a UI input
+    /// limit, not a model or validator constraint. `DisplayFormat` itself, the
+    /// `FormatValidator` strict parse, `DigitSegmenter`, and seven-segment
+    /// reconstruction all handle any positive count; nothing here clamps them.
+    /// 12 covers real bench instruments, including 8–10 digit counters and
+    /// frequency meters.
+    static let digitCountRange: ClosedRange<Int> = 1...12
+
     /// Starting state for a new device: dimensionless, no range, lenient
     /// numeric extraction. The digit fields only seed the format sheet.
     static let unconstrained = DisplayFormat(digitCount: 5,
@@ -67,8 +75,12 @@ struct DisplayFormat: Codable, Equatable, Hashable, Sendable {
         return pattern
     }
 
-    /// Placeholder shown when no reading is locked, e.g. `—.———`.
+    /// Placeholder shown when no reading is locked. Constrained formats mirror
+    /// the digit grammar (e.g. `——.———`); an unconstrained (Mode 3) device has
+    /// no fixed digit layout, so it shows a neutral `———` rather than a fake
+    /// decimal pattern that would imply a precision the app isn't enforcing.
     var placeholder: String {
+        guard constrainToFormat else { return "———" }
         if let decimalPosition {
             return String(repeating: "—", count: max(1, decimalPosition)) + "."
                 + String(repeating: "—", count: max(0, digitCount - decimalPosition))
@@ -76,9 +88,38 @@ struct DisplayFormat: Codable, Equatable, Hashable, Sendable {
         return String(repeating: "—", count: max(1, digitCount))
     }
 
-    /// Formats an accepted value with the display's digit layout.
+    /// Formats an accepted value for display.
+    ///
+    /// Constrained (Mode 2) devices render through the fixed digit grammar
+    /// (`fractionDigits` decimal places, always shown). Unconstrained (Mode 3)
+    /// devices have no declared precision, so the raw value is rendered
+    /// *naturally* via `naturalString` — trailing zeros trimmed, integers with
+    /// no decimal point — rather than padded to the seed format's digit count
+    /// (which made "230" read as "230.000"). Both the live card and the results
+    /// screen call this, so the two stay consistent.
     func formatted(_ value: Double) -> String {
         guard value.isFinite else { return placeholder }
+        guard constrainToFormat else { return Self.naturalString(value) }
         return String(format: "%.\(fractionDigits)f", value)
+    }
+
+    /// Natural, format-agnostic rendering of `value` for unconstrained (Mode 3)
+    /// devices and their CSV rows: a locale-independent `.` decimal separator,
+    /// no digit grouping, trailing zeros trimmed, up to 6 fraction digits, and
+    /// integers rendered without a decimal point. Small magnitudes stay plain
+    /// decimal (`0.000123`, never scientific notation) because the fixed
+    /// `%.6f` conversion never switches to exponent form. Non-finite input
+    /// yields the neutral `———` placeholder.
+    static func naturalString(_ value: Double) -> String {
+        guard value.isFinite else { return "———" }
+        // %f (unlike NumberFormatter) is locale-independent and never uses
+        // scientific notation; 6 places is the retained-precision ceiling.
+        var text = String(format: "%.6f", value)
+        if text.contains(".") {
+            while text.hasSuffix("0") { text.removeLast() }
+            if text.hasSuffix(".") { text.removeLast() }
+        }
+        // A tiny negative that rounds to zero would render as "-0"; normalize.
+        return text == "-0" ? "0" : text
     }
 }

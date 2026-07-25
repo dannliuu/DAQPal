@@ -233,6 +233,9 @@ to a specific spec section/milestone rather than an open-ended aspiration.
   benchmark (FPS, latency, CPU/GPU/memory, ANE utilization per spec §14) against PP-OCRv6 Tiny
   and Small via ONNX has not been run, and the spec explicitly warns not to assume Core
   ML/ONNX execution implies Neural Engine usage — that has to be measured, not assumed.
+  **See `OCR_RESEARCH.md` (2026-07-23)** for the verified landscape and the decided
+  direction: a digit-vocabulary conv-CTC engine (all display types) + per-slot CNN
+  specialist + classical segment-sampling cross-check, with a phased S/M/L plan.
 - **Instrument profiles** (spec §23, Milestone 13). Persist and load the digit
   count/decimal-position/sign/unit/range tuple the format sheet currently collects manually
   every session, so a known meter model configures itself instead of being re-entered by hand

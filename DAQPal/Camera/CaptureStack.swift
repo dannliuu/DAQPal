@@ -34,7 +34,7 @@ enum CaptureStatus: Equatable {
 /// viewport shows exactly what the pipeline is processing; the capture UI is
 /// responsible for labeling this clearly as synthetic, never real-DMM data.
 @MainActor @Observable
-final class CaptureStack {
+final class CaptureStack: VideoRecordingCoordinating {
     private(set) var status: CaptureStatus = .idle
     let cameraManager: CameraManager
     let processor: MeasurementProcessor
@@ -44,6 +44,8 @@ final class CaptureStack {
     private let appState: AppState
     private let permissionManager = CameraPermissionManager()
     private var frameProcessor: FrameProcessor?
+    /// Optional session video tee, armed by `beginVideoCapture()`.
+    private let recorder = SessionVideoRecorder()
 
     init(appState: AppState) {
         let processor = MeasurementProcessor()
@@ -51,6 +53,7 @@ final class CaptureStack {
         self.cameraManager = CameraManager(appState: appState)
         self.appState = appState
         appState.processor = processor
+        appState.videoRecordingCoordinator = self
     }
 
     /// Permission → configure → run on device; synthetic pipeline in the
@@ -67,6 +70,59 @@ final class CaptureStack {
         frameProcessor?.stop()
         frameProcessor = nil
         cameraManager.stop()
+    }
+
+    // MARK: VideoRecordingCoordinating
+
+    /// Arms the recorder and starts teeing capture frames into it. Called by
+    /// `AppState.startRecording()` only when the "SAVE VIDEO" toggle is on.
+    func beginVideoCapture() {
+        recorder.start()
+#if targetEnvironment(simulator)
+        // The synthetic frame pump already tees frames into `recorder` (see
+        // `startSimulated`); those appends were no-ops until `start()` armed
+        // the recorder just now, so there is nothing else to install here.
+#else
+        // Hook the capture-queue tap so every delivered frame reaches the
+        // recorder upstream of the OCR stream's `.bufferingNewest(1)` drop.
+        cameraManager.frameSource.frameTap = { [recorder] frame in
+            recorder.append(frame)
+        }
+#endif
+        appState.videoSaveStatus = .recording
+    }
+
+    /// Removes the tap and finalizes the recording. Always called by
+    /// `AppState.stopRecording()`; a no-op when the recorder was never armed
+    /// (the toggle was off at REC time).
+    func endVideoCapture(saveToPhotos: Bool) {
+#if !targetEnvironment(simulator)
+        cameraManager.frameSource.frameTap = nil
+#endif
+        guard recorder.isArmed else { return }
+
+        appState.videoSaveStatus = .saving
+        Task { @MainActor [appState, recorder] in
+            switch await recorder.finish() {
+            case .success(let url):
+                if saveToPhotos {
+                    do {
+                        try await PhotoLibrarySaver.save(videoURL: url)
+                        appState.videoSaveStatus = .saved
+                    } catch {
+                        appState.videoSaveStatus = .failed(error.localizedDescription)
+                    }
+                } else {
+                    appState.videoSaveStatus = .idle
+                }
+                // Temp file has served its purpose (copied to Photos, or the
+                // user didn't want it kept) — remove it either way.
+                try? FileManager.default.removeItem(at: url)
+            case .failure(let error):
+                // finish() already removed any partial temp file.
+                appState.videoSaveStatus = .failed(error.localizedDescription)
+            }
+        }
     }
 
     // MARK: Device capture
@@ -105,6 +161,11 @@ final class CaptureStack {
 
         let synthetic = SyntheticFrameSource(fps: 12)
         let previewTapped = SimulatorPreviewFrameSource(base: synthetic) { [weak self] frame in
+            // Tee synthetic frames into the recorder too (a no-op until REC
+            // arms it) so the video-save feature is exercisable end to end in
+            // the Simulator without camera hardware. `recorder` is a Sendable
+            // `let`, so this off-main access needs no MainActor hop.
+            self?.recorder.append(frame)
             let image = Self.previewImage(from: frame.pixelBuffer)
             await MainActor.run {
                 self?.simulatedPreviewImage = image

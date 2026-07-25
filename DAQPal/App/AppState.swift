@@ -18,6 +18,28 @@ enum UIMode: Equatable, Sendable {
     case reviewingResults
 }
 
+/// Lifecycle of the optional session video recording (REC tee → Photos).
+enum VideoSaveStatus: Equatable, Sendable {
+    case idle
+    /// Frames are being teed into the asset writer alongside live OCR.
+    case recording
+    /// Writer finishing / Photos save in flight after STOP.
+    case saving
+    case saved
+    case failed(String)
+    /// Video capture isn't available in the current capture mode.
+    case unavailable
+}
+
+/// Implemented by the capture stack: owns the asset-writer tee on the capture
+/// pipeline. `AppState` drives it from `startRecording`/`stopRecording` so the
+/// single REC button controls both measurements and (optionally) video.
+@MainActor
+protocol VideoRecordingCoordinating: AnyObject {
+    func beginVideoCapture()
+    func endVideoCapture(saveToPhotos: Bool)
+}
+
 @MainActor @Observable
 final class AppState {
     /// How long after the last accepted reading a device stays "locked".
@@ -51,6 +73,18 @@ final class AppState {
     /// True while the user is actively dragging/resizing an ROI window —
     /// auto-tracking pauses so it never fights the gesture.
     var isEditingROI = false
+
+    // MARK: Session video recording
+
+    /// "SAVE VIDEO" toggle: when on, REC also tees capture frames into an
+    /// `.mov` saved to Photos on STOP. Off by default — writing 1080p video
+    /// during live OCR costs storage/battery, and a saved session doubles as a
+    /// re-processable fixture (spec §30), so it's an explicit choice.
+    var saveVideoEnabled = false
+    /// Written by the capture stack as the recording/saving progresses.
+    var videoSaveStatus: VideoSaveStatus = .idle
+    /// Set once by the capture stack at startup.
+    weak var videoRecordingCoordinator: (any VideoRecordingCoordinating)?
 
     // MARK: Session / navigation
 
@@ -151,6 +185,10 @@ final class AppState {
         completedSession = nil
         activeRecording = RecordingSession()
         uiMode = .recording
+        videoSaveStatus = .idle
+        if saveVideoEnabled {
+            videoRecordingCoordinator?.beginVideoCapture()
+        }
     }
 
     func stopRecording() {
@@ -159,6 +197,8 @@ final class AppState {
         activeRecording = nil
         uiMode = .reviewingResults
         showResults = true
+        // Always end capture — a no-op when video wasn't being recorded.
+        videoRecordingCoordinator?.endVideoCapture(saveToPhotos: saveVideoEnabled)
     }
 
     /// "NEW SESSION" on the results screen: back to live capture, keeping
@@ -189,6 +229,8 @@ final class AppState {
 
     func removeDevice(id: UUID) {
         guard devices.count > 1 else { return }
+        // Samples for a removed device would vanish from the session — removal waits until STOP.
+        guard !isRecording else { return }
         devices.removeAll { $0.id == id }
         liveReadings[id] = nil
         lastAcceptedAt[id] = nil

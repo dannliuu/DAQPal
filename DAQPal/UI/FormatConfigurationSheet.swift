@@ -57,7 +57,7 @@ struct FormatConfigurationSheet: View {
                 .opacity(constrained ? 1 : 0.45)
             formatRow(label: "UNIT") { unitControl(device) }
             formatRow(label: "VALID RANGE") { rangeStepper(device) }
-            doneButton
+            doneButton(constrained: constrained)
         }
         .padding(.horizontal, 18)
         .padding(.top, 4)
@@ -81,7 +81,7 @@ struct FormatConfigurationSheet: View {
     }
 
     private func modeLabel(_ format: DisplayFormat) -> String {
-        format.constrainToFormat ? "Mode 2 — user-configured format" : "Mode 3 — free numeric"
+        format.constrainToFormat ? "Exact format — user-configured" : "Any number — unconstrained"
     }
 
     private var closeButton: some View {
@@ -109,6 +109,11 @@ struct FormatConfigurationSheet: View {
                 Text(device.displayFormat.patternPreview)
                     .font(Theme.mono(24, weight: .semibold))
                     .tracking(2)
+                    // A high-digit pattern (e.g. ±XXXXXXXXX.XXX) is far wider
+                    // than the 5-digit default — scale it down to fit on one
+                    // line rather than wrap or truncate.
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.4)
             } else {
                 // No grammar to preview once unconstrained — show what IS
                 // still recognized (digits, sign, decimal point) instead of
@@ -140,11 +145,14 @@ struct FormatConfigurationSheet: View {
         }
     }
 
-    private var doneButton: some View {
+    /// Label matches what actually resumes: OCR only re-enforces a grammar
+    /// when the device is constrained, so "RESUME CONSTRAINED OCR" would be
+    /// false while unconstrained.
+    private func doneButton(constrained: Bool) -> some View {
         Button {
             appState.formatSheetDeviceID = nil
         } label: {
-            Text("DONE — RESUME CONSTRAINED OCR")
+            Text(constrained ? "DONE — RESUME CONSTRAINED OCR" : "DONE — RESUME OCR")
                 .font(Theme.ui(12, weight: .heavy))
                 .tracking(0.5)
                 .foregroundStyle(Theme.ink)
@@ -153,38 +161,77 @@ struct FormatConfigurationSheet: View {
                 .background(RoundedRectangle(cornerRadius: 8).fill(Theme.brandYellow))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Done, resume constrained OCR")
+        .accessibilityLabel(constrained ? "Done, resume constrained OCR" : "Done, resume OCR")
     }
 
     // MARK: Rows
 
+    /// −/+ stepper (same chip style as VALID RANGE) clamped to
+    /// `DisplayFormat.digitCountRange` — a UI bound only; the model and
+    /// validator accept any count.
     private func digitsControl(_ device: Device) -> some View {
-        SegmentedChoice(options: [4, 5, 6], selection: device.displayFormat.digitCount, label: { String($0) }) { newCount in
-            adjust(device) { format in
-                format.digitCount = newCount
-                let currentDecimal = format.decimalPosition ?? 1
-                format.decimalPosition = min(currentDecimal, newCount - 1)
-            }
-        }
-    }
-
-    private func decimalStepper(_ device: Device) -> some View {
         let digits = device.displayFormat.digitCount
-        let decimal = device.displayFormat.decimalPosition ?? 1
+        let range = DisplayFormat.digitCountRange
         return HStack(spacing: 10) {
-            stepButton("−", enabled: decimal > 1) {
-                adjust(device) { $0.decimalPosition = max(1, decimal - 1) }
+            stepButton("−", enabled: digits > range.lowerBound) {
+                adjust(device) { setDigitCount(&$0, digits - 1) }
             }
-            Text("\(decimal)")
+            Text("\(digits)")
                 .font(Theme.mono(14, weight: .semibold))
                 .frame(minWidth: 16)
                 .multilineTextAlignment(.center)
-            stepButton("+", enabled: decimal < digits - 1) {
-                adjust(device) { $0.decimalPosition = min(digits - 1, decimal + 1) }
+            stepButton("+", enabled: digits < range.upperBound) {
+                adjust(device) { setDigitCount(&$0, digits + 1) }
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Decimal after digit \(decimal)")
+        .accessibilityLabel("Digits \(digits)")
+    }
+
+    /// Applies a new digit count clamped to `DisplayFormat.digitCountRange` and
+    /// keeps `decimalPosition` valid for it: a 1-digit display cannot hold an
+    /// interior separator (forced to nil), and a shrinking count clamps the
+    /// separator to at most `digits − 1`.
+    private func setDigitCount(_ format: inout DisplayFormat, _ newCount: Int) {
+        let range = DisplayFormat.digitCountRange
+        let clamped = min(max(newCount, range.lowerBound), range.upperBound)
+        format.digitCount = clamped
+        if clamped == 1 {
+            format.decimalPosition = nil
+        } else if let decimal = format.decimalPosition {
+            format.decimalPosition = min(decimal, clamped - 1)
+        }
+    }
+
+    /// Decimal-position stepper. The model's `nil` (= integer display, no
+    /// separator) is exposed via the same "—" convention as VALID RANGE:
+    /// "−" at position 1 drops to nil; "+" at nil returns to 1; otherwise the
+    /// stepper ranges 1...digits−1. A 1-digit display can only be integer, so
+    /// the whole row is disabled and dimmed there.
+    private func decimalStepper(_ device: Device) -> some View {
+        let digits = device.displayFormat.digitCount
+        let decimal = device.displayFormat.decimalPosition
+        let enabled = digits > 1
+        return HStack(spacing: 10) {
+            stepButton("−", enabled: enabled && decimal != nil) {
+                adjust(device) {
+                    let current = $0.decimalPosition ?? 1
+                    $0.decimalPosition = current > 1 ? current - 1 : nil
+                }
+            }
+            Text(decimal.map(String.init) ?? Self.noUnitToken)
+                .font(Theme.mono(14, weight: .semibold))
+                .frame(minWidth: 16)
+                .multilineTextAlignment(.center)
+            stepButton("+", enabled: enabled && (decimal ?? 0) < digits - 1) {
+                adjust(device) {
+                    $0.decimalPosition = $0.decimalPosition.map { min(digits - 1, $0 + 1) } ?? 1
+                }
+            }
+        }
+        .opacity(enabled ? 1 : 0.45)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(decimal.map { "Decimal after digit \($0)" } ?? "Integer display, no decimal")
     }
 
     /// Same toggle-chip styling as `signToggle` below — ON (constrained)
@@ -205,7 +252,7 @@ struct FormatConfigurationSheet: View {
                 .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Theme.heavyRule, lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .contentShape(Rectangle().inset(by: -8))
+        .contentShape(Rectangle().inset(by: -15))
         .accessibilityLabel("Recognition constraint")
         .accessibilityValue(constrained ? "Exact format" : "Any number")
     }
@@ -225,7 +272,7 @@ struct FormatConfigurationSheet: View {
                 .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Theme.heavyRule, lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .contentShape(Rectangle().inset(by: -8))
+        .contentShape(Rectangle().inset(by: -15))
         .accessibilityLabel("Sign")
         .accessibilityValue(allowed ? "Allowed" : "Off")
     }
@@ -360,7 +407,7 @@ private struct SegmentedChoice<Value: Hashable>: View {
                         .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Theme.heavyRule, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
-                .contentShape(Rectangle().inset(by: -8))
+                .contentShape(Rectangle().inset(by: -15))
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }

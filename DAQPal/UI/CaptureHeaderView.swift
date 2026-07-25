@@ -26,9 +26,7 @@ struct CaptureHeaderView: View {
                 deviceCountChip
                 debugToggleChip
                 importChip
-                if appState.devices.count < AppState.maxDevices {
-                    addDeviceChip
-                }
+                addDeviceChip
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -44,7 +42,7 @@ struct CaptureHeaderView: View {
         return chipText(model.isEmpty ? "MANUAL" : model.uppercased())
             .foregroundStyle(Theme.ink)
             .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Theme.heavyRule, lineWidth: 1))
-            .accessibilityLabel(model.isEmpty ? "Instrument profile: manual format" : "Instrument profile: \(model)")
+            .accessibilityLabel(model.isEmpty ? "Instrument profile: none set" : "Instrument profile: \(model)")
     }
 
     private var deviceCountChip: some View {
@@ -91,16 +89,21 @@ struct CaptureHeaderView: View {
         .accessibilityLabel("Import a recorded video of an instrument display")
     }
 
+    /// Always rendered (rather than disappearing at the device cap) so the
+    /// header's chip row doesn't reflow; disabled + dimmed at the cap
+    /// instead, mirroring `importChip`'s pattern.
     private var addDeviceChip: some View {
-        Button {
+        let atCap = appState.devices.count >= AppState.maxDevices
+        return Button {
             appState.addDevice()
         } label: {
             chipText("+ ADD")
-                .foregroundStyle(Theme.ink)
+                .foregroundStyle(Theme.ink.opacity(atCap ? 0.35 : 1))
                 .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Theme.heavyRule, lineWidth: 1))
                 .contentShape(Rectangle().inset(by: -13))
         }
         .buttonStyle(.plain)
+        .disabled(atCap)
         .accessibilityLabel("Add device")
     }
 
