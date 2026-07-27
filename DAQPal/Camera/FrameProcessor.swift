@@ -16,30 +16,53 @@ import Foundation
 final class FrameProcessor {
     private let source: any FrameSource
     private let processor: MeasurementProcessor
+    /// The intelligent screen-locking stage. Runs BEFORE recognition so the
+    /// tracked geometry it produces is applied to the very frame it was
+    /// measured from. Idle (and effectively free) until enabled, which is what
+    /// keeps the manual workflow the untouched default.
+    private let lockPipeline: ScreenLockPipeline
     /// Held weakly so a running `FrameProcessor` never keeps `AppState` alive
     /// past its owner; results simply stop being applied once it is gone.
     private weak var appState: AppState?
     private var task: Task<Void, Never>?
 
-    init(source: any FrameSource, processor: MeasurementProcessor, appState: AppState) {
+    init(source: any FrameSource,
+         processor: MeasurementProcessor,
+         appState: AppState,
+         lockPipeline: ScreenLockPipeline) {
         self.source = source
         self.processor = processor
         self.appState = appState
+        self.lockPipeline = lockPipeline
     }
 
     func start() {
         guard task == nil else { return }
         let source = self.source
         let processor = self.processor
+        let lockPipeline = self.lockPipeline
         // Captured weakly (not via `self`) so the consuming Task never keeps
         // either this object or `AppState` alive beyond `stop()`.
         weak let appState = self.appState
         task = Task {
             for await frame in source.frames() {
                 if Task.isCancelled { break }
-                let result = await processor.process(frame: frame)
+
+                // Read the acquisition inputs the pipeline needs from the UI
+                // side. One hop, before the expensive work, so the geometry the
+                // pipeline reasons about matches what the user currently sees.
+                let inputs = await MainActor.run { appState?.screenLockInputs() }
+                let lock = await lockPipeline.process(frame: frame,
+                                                      selection: inputs?.selection,
+                                                      isUserDragging: inputs?.isUserDragging ?? false)
+                if Task.isCancelled { break }
+
+                let result = await processor.process(frame: frame,
+                                                     roiOverrides: lock.fieldROIs,
+                                                     requiringOverride: inputs?.fieldBackedDeviceIDs ?? [])
                 if Task.isCancelled { break }
                 await MainActor.run {
+                    appState?.applyScreenLock(lock)
                     appState?.apply(result)
                 }
             }

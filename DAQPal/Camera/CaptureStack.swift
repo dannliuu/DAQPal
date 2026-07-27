@@ -38,12 +38,28 @@ final class CaptureStack: VideoRecordingCoordinating {
     private(set) var status: CaptureStatus = .idle
     let cameraManager: CameraManager
     let processor: MeasurementProcessor
-    /// Simulator only: latest synthetic frame rendered for the viewport.
-    private(set) var simulatedPreviewImage: UIImage?
+    /// Simulator only: flips true once the first synthetic frame has rendered,
+    /// switching the viewport from the "starting" placeholder to the preview.
+    /// Deliberately a one-shot Bool — the frames themselves flow through
+    /// `previewRelay` straight into a `CALayer`, *outside* SwiftUI observation,
+    /// so a 1080×1920 image update no longer invalidates any view body at
+    /// frame rate (the main source of ROI drag lag in the Simulator).
+    private(set) var hasPreviewFrame = false
+    /// Frame conduit for the Simulator preview layer (`let` of reference type
+    /// — not observation-tracked, by design).
+    let previewRelay = PreviewFrameRelay()
+    /// Motion pattern applied to the Simulator's synthetic display — a
+    /// stress-test rig for ROI tracking (yaw/pitch/roll/bounce).
+    private(set) var demoMotion: DemoMotion = .steady
+
+    /// The intelligent screen-locking stage, created once and shared by every
+    /// capture mode (live, synthetic). Idle until `AppState.screenLockEnabled`.
+    let lockPipeline = ScreenLockPipeline()
 
     private let appState: AppState
     private let permissionManager = CameraPermissionManager()
     private var frameProcessor: FrameProcessor?
+    @ObservationIgnored private var syntheticSource: SyntheticFrameSource?
     /// Optional session video tee, armed by `beginVideoCapture()`.
     private let recorder = SessionVideoRecorder()
 
@@ -54,6 +70,7 @@ final class CaptureStack: VideoRecordingCoordinating {
         self.appState = appState
         appState.processor = processor
         appState.videoRecordingCoordinator = self
+        appState.lockPipeline = lockPipeline
     }
 
     /// Permission → configure → run on device; synthetic pipeline in the
@@ -70,6 +87,22 @@ final class CaptureStack: VideoRecordingCoordinating {
         frameProcessor?.stop()
         frameProcessor = nil
         cameraManager.stop()
+    }
+
+    // MARK: Demo motion (Simulator stress rig)
+
+    /// Applies a synthetic-display motion pattern. Safe to call before
+    /// `start()` — the pending value seeds the frame source when it's built —
+    /// and live mid-stream (the source reads it per frame). No-op wiring on
+    /// device builds, where there is no synthetic source.
+    func setDemoMotion(_ motion: DemoMotion) {
+        demoMotion = motion
+        syntheticSource?.setMotion(motion)
+    }
+
+    /// Cycles to the next motion pattern (tap target: the SYNTHETIC chip).
+    func cycleDemoMotion() {
+        setDemoMotion(demoMotion.next)
     }
 
     // MARK: VideoRecordingCoordinating
@@ -145,7 +178,8 @@ final class CaptureStack: VideoRecordingCoordinating {
 
         let frameProcessor = FrameProcessor(source: cameraManager.frameSource,
                                             processor: processor,
-                                            appState: appState)
+                                            appState: appState,
+                                            lockPipeline: lockPipeline)
         self.frameProcessor = frameProcessor
         // Subscribe before starting the session so no early frame is missed.
         frameProcessor.start()
@@ -159,7 +193,8 @@ final class CaptureStack: VideoRecordingCoordinating {
         appState.videoDimensions = CGSize(width: 1080, height: 1920)
         appState.captureFrameRate = 12
 
-        let synthetic = SyntheticFrameSource(fps: 12)
+        let synthetic = SyntheticFrameSource(fps: 12, motion: demoMotion)
+        syntheticSource = synthetic
         let previewTapped = SimulatorPreviewFrameSource(base: synthetic) { [weak self] frame in
             // Tee synthetic frames into the recorder too (a no-op until REC
             // arms it) so the video-save feature is exercisable end to end in
@@ -168,11 +203,16 @@ final class CaptureStack: VideoRecordingCoordinating {
             self?.recorder.append(frame)
             let image = Self.previewImage(from: frame.pixelBuffer)
             await MainActor.run {
-                self?.simulatedPreviewImage = image
+                guard let self, let image else { return }
+                if !self.hasPreviewFrame { self.hasPreviewFrame = true }
+                self.previewRelay.publish(image)
             }
         }
 
-        let frameProcessor = FrameProcessor(source: previewTapped, processor: processor, appState: appState)
+        let frameProcessor = FrameProcessor(source: previewTapped,
+                                            processor: processor,
+                                            appState: appState,
+                                            lockPipeline: lockPipeline)
         self.frameProcessor = frameProcessor
         frameProcessor.start()
         status = .simulated
@@ -181,10 +221,28 @@ final class CaptureStack: VideoRecordingCoordinating {
     /// Off-main-safe conversion; `CIContext` is documented thread-safe for
     /// concurrent use, so this can run on the frame-consuming background task
     /// without hopping to the main actor first.
-    nonisolated private static func previewImage(from pixelBuffer: CVPixelBuffer) -> UIImage? {
+    nonisolated private static func previewImage(from pixelBuffer: CVPixelBuffer) -> CGImage? {
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        guard let cgImage = simulatorPreviewContext.createCGImage(ciImage, from: ciImage.extent) else { return nil }
-        return UIImage(cgImage: cgImage)
+        return simulatorPreviewContext.createCGImage(ciImage, from: ciImage.extent)
+    }
+}
+
+/// Hands preview frames from the capture stack to whatever layer-backed view
+/// is currently showing them, entirely outside SwiftUI observation — updating
+/// a `CALayer.contents` is a cheap Core Animation commit, vs. the previous
+/// design where an `@Observable UIImage?` invalidated the whole capture
+/// screen's body on every frame.
+@MainActor
+final class PreviewFrameRelay {
+    /// Most recent frame, so a view attaching mid-stream paints immediately.
+    private(set) var latest: CGImage?
+    /// The currently-attached view's consumer. At most one; reassigning
+    /// replaces the previous consumer (only one preview view exists at a time).
+    var sink: ((CGImage) -> Void)?
+
+    func publish(_ image: CGImage) {
+        latest = image
+        sink?(image)
     }
 }
 

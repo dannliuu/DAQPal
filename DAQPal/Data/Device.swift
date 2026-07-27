@@ -51,11 +51,16 @@ struct LiveReading: Equatable, Sendable {
     var locked: Bool
     /// Whether the most recent reading was accepted.
     var accepted: Bool
-    /// Timestamp of the most recent reading.
-    var lastTimestamp: TimeInterval?
+
+    // Deliberately no per-frame timestamp here. Every field of this struct is
+    // observable UI state written at frame rate, and `AppState.apply` only
+    // publishes when the value actually changed — a monotonically advancing
+    // timestamp would make every frame "changed" and silently defeat that gate
+    // (the ROI drag-lag regression; see ARCHITECTURE.md §2). Timestamp
+    // bookkeeping lives in `AppState.lastAcceptedAt`, which is not observable.
 
     static let empty = LiveReading(value: nil, unit: nil, confidence: 0,
-                                   locked: false, accepted: false, lastTimestamp: nil)
+                                   locked: false, accepted: false)
 }
 
 /// Immutable snapshot of what the processing pipeline needs to know about one

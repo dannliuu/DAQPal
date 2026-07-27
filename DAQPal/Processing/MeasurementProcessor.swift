@@ -93,12 +93,45 @@ actor MeasurementProcessor {
     /// validation runs as one synchronous stretch in stable config order. This
     /// keeps the sample rate from dividing by device count while preserving
     /// the no-await validator-mutation rule above.
-    func process(frame: TimestampedFrame) async -> FrameResult {
+    /// Per-frame ROI overrides, keyed by device/field id.
+    ///
+    /// The intelligent pipeline derives a field's frame-space region from the
+    /// LIVE tracked geometry every frame, so its ROI is not a stored property
+    /// of the device — it changes as the display moves. Pushing that through
+    /// `update(devices:)` once per frame would mean an actor round-trip and a
+    /// full config rebuild per frame, and would race the pushed value against
+    /// the frame it was computed for. Passing it alongside the frame keeps the
+    /// geometry and the pixels it was measured from together.
+    ///
+    /// Devices absent from the map keep their configured ROI — which is what
+    /// preserves the manual workflow untouched.
+    /// - Parameter requiringOverride: devices whose ROI is ONLY valid when
+    ///   supplied per frame (field-backed devices, whose geometry is a
+    ///   projection of a tracked target). Any such device without an override
+    ///   this frame is skipped entirely rather than recognized against its
+    ///   placeholder ROI — reading the placeholder would report whatever
+    ///   happened to sit at a fixed location as if it were the tracked field.
+    func process(frame: TimestampedFrame,
+                 roiOverrides: [UUID: NormalizedROI] = [:],
+                 requiringOverride: Set<UUID> = []) async -> FrameResult {
         guard !configs.isEmpty else {
             return FrameResult(timestamp: frame.timestamp, readings: [:], debugText: nil)
         }
 
-        let jobs = configs
+        let jobs: [DeviceRecognitionConfig]
+        if roiOverrides.isEmpty && requiringOverride.isEmpty {
+            jobs = configs
+        } else {
+            jobs = configs.compactMap { config in
+                if let override = roiOverrides[config.id] {
+                    return DeviceRecognitionConfig(id: config.id, roi: override, format: config.format)
+                }
+                return requiringOverride.contains(config.id) ? nil : config
+            }
+        }
+        guard !jobs.isEmpty else {
+            return FrameResult(timestamp: frame.timestamp, readings: [:], debugText: nil)
+        }
         let useDigits = useDigitLevelRecognition
         let ocr = self.ocr
         let segmenter = self.segmenter

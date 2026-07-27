@@ -74,6 +74,178 @@ final class AppState {
     /// auto-tracking pauses so it never fights the gesture.
     var isEditingROI = false
 
+    // MARK: Intelligent screen locking (spec Gate 14)
+
+    /// Master switch for the intelligent pipeline. OFF by default: manual ROI
+    /// placement stays the shipping default until the tracked path is validated
+    /// on physical hardware, and the spec's own principle 10 makes manual the
+    /// fallback rather than the exception.
+    var screenLockEnabled = false {
+        didSet { pushScreenLockEnabled() }
+    }
+    /// Live acquisition state, published for the overlay.
+    private(set) var snapState: SnapState = .manual
+    private(set) var lockedTarget: TrackedTarget?
+    private(set) var screenCandidates: [ScreenCandidate] = []
+    /// Fields found on the locked display, plus the user's selections.
+    private(set) var fieldCatalog: ScreenFieldCatalog?
+    /// Set once by the capture stack at startup.
+    @ObservationIgnored weak var lockPipeline: ScreenLockPipeline?
+
+    /// Devices whose ROI comes from tracked geometry rather than a stored
+    /// value. These MUST receive a per-frame override or be skipped — reading
+    /// their placeholder ROI would report a value from whatever happens to be
+    /// at that fixed location.
+    var fieldBackedDeviceIDs: Set<UUID> {
+        guard let catalog = fieldCatalog else { return [] }
+        return Set(catalog.fields.filter { $0.isSelected && $0.kind == .numeric }.map(\.id))
+    }
+
+    /// Inputs the frame loop reads from the UI once per frame.
+    struct ScreenLockInputs: Sendable {
+        var selection: ScreenQuad?
+        var isUserDragging: Bool
+        var fieldBackedDeviceIDs: Set<UUID>
+    }
+
+    /// Snapshot of what the pipeline needs from the UI side. Cheap and
+    /// allocation-free; called once per frame from the drain loop.
+    func screenLockInputs() -> ScreenLockInputs {
+        // The manual selection seed is the first device with a STORED roi — a
+        // field-backed device has none and must never be offered as the
+        // acquisition seed.
+        let manualSeed = devices.first { $0.roi != nil }?.roi
+        return ScreenLockInputs(selection: manualSeed.map { ScreenQuad(roi: $0) },
+                                isUserDragging: isEditingROI,
+                                fieldBackedDeviceIDs: fieldBackedDeviceIDs)
+    }
+
+    /// Publishes one frame of pipeline output. Every write is change-gated for
+    /// the same reason `apply(_:)`'s are: this runs at frame rate, and an
+    /// ungated write would invalidate the capture screen on every frame (see
+    /// ARCHITECTURE.md §2).
+    func applyScreenLock(_ update: ScreenLockUpdate) {
+        guard !update.isIdle else {
+            if snapState != .manual { snapState = .manual }
+            if lockedTarget != nil { lockedTarget = nil }
+            if !screenCandidates.isEmpty { screenCandidates = [] }
+            return
+        }
+
+        if snapState != update.snapState { snapState = update.snapState }
+        if lockedTarget != update.target { lockedTarget = update.target }
+        if screenCandidates != update.candidates { screenCandidates = update.candidates }
+
+        if let analyzed = update.analyzedFields, let target = update.target {
+            var catalog = fieldCatalog?.targetID == target.id
+                ? (fieldCatalog ?? ScreenFieldCatalog(targetID: target.id))
+                : ScreenFieldCatalog(targetID: target.id)
+            catalog.merge(analyzed, at: Date().timeIntervalSinceReferenceDate)
+            fieldCatalog = catalog
+            pushSelectedFields()
+        }
+
+        if update.didRelease {
+            fieldCatalog = nil
+            syncFieldDevices()
+            pushSelectedFields()
+        }
+    }
+
+    /// Toggles a field's capture selection and pushes the change to the
+    /// pipeline. Selected fields also become recordable devices so the whole
+    /// existing recording/CSV/results stack applies unchanged.
+    func toggleFieldSelection(_ fieldID: UUID) {
+        // Deselecting mid-recording would remove that field's device, and its
+        // already-captured samples would vanish from the finished session —
+        // the same data-loss guard `removeDevice` carries.
+        guard !isRecording else { return }
+        guard var catalog = fieldCatalog,
+              let index = catalog.fields.firstIndex(where: { $0.id == fieldID }) else { return }
+        let willSelect = !catalog.fields[index].isSelected
+        // Respect the device cap: selected fields become devices, so selecting
+        // past the cap would silently exceed the limit the "+ ADD" chip enforces.
+        if willSelect, devices.count >= Self.maxDevices { return }
+        catalog.fields[index].isSelected.toggle()
+        fieldCatalog = catalog
+        syncFieldDevices()
+        pushSelectedFields()
+    }
+
+    /// True when selecting one more field would exceed the device cap — lets
+    /// the overlay dim unselected fields rather than silently ignoring taps.
+    var canSelectAnotherField: Bool { devices.count < Self.maxDevices }
+
+    /// Requests a fresh analysis pass of the locked display.
+    func reanalyzeLockedScreen() {
+        guard let pipeline = lockPipeline else { return }
+        Task { await pipeline.requestAnalysis() }
+    }
+
+    /// Drops the lock and returns to manual acquisition.
+    func releaseScreenLock() {
+        guard let pipeline = lockPipeline else { return }
+        fieldCatalog = nil
+        lockedTarget = nil
+        snapState = .manual
+        syncFieldDevices()
+        pushSelectedFields()
+        Task { await pipeline.release() }
+    }
+
+    /// Mirrors selected fields into `devices` so recording, CSV export and the
+    /// results screen work on them with no changes at all: a field's UUID is
+    /// its device id, and its per-frame ROI arrives as a pipeline override.
+    ///
+    /// Field-backed devices carry a nil `roi` deliberately — their geometry is
+    /// not a stored property but a per-frame projection of the tracked target,
+    /// so storing one would go stale the instant the display moved.
+    private func syncFieldDevices() {
+        // A nil catalog means the lock is gone, which must still REMOVE the
+        // devices its fields created — early-returning here orphaned them,
+        // leaving phantom cards that could never produce a reading again.
+        guard let catalog = fieldCatalog else {
+            devices.removeAll { knownFieldDeviceIDs.contains($0.id) }
+            knownFieldDeviceIDs = []
+            return
+        }
+        let selected = catalog.fields.filter { $0.isSelected && $0.kind == .numeric }
+        let selectedIDs = Set(selected.map(\.id))
+
+        // Drop devices for fields that are no longer selected. Tracked by the
+        // ids this method actually created, so a re-analysis that changes the
+        // catalog can never strand a device it no longer knows about.
+        devices.removeAll { knownFieldDeviceIDs.contains($0.id) && !selectedIDs.contains($0.id) }
+        knownFieldDeviceIDs = selectedIDs
+
+        for (index, field) in selected.enumerated() where !devices.contains(where: { $0.id == field.id }) {
+            devices.append(Device(id: field.id,
+                                  name: field.displayName(index: index),
+                                  model: "",
+                                  displayFormat: field.format,
+                                  roi: nil))
+        }
+    }
+
+    private func pushSelectedFields() {
+        guard let pipeline = lockPipeline else { return }
+        let fields = fieldCatalog?.fields ?? []
+        Task { await pipeline.setSelectedFields(fields) }
+    }
+
+    private func pushScreenLockEnabled() {
+        guard let pipeline = lockPipeline else { return }
+        let enabled = screenLockEnabled
+        if !enabled {
+            fieldCatalog = nil
+            lockedTarget = nil
+            snapState = .manual
+            screenCandidates = []
+            syncFieldDevices()
+        }
+        Task { await pipeline.setEnabled(enabled) }
+    }
+
     // MARK: Session video recording
 
     /// "SAVE VIDEO" toggle: when on, REC also tees capture frames into an
@@ -117,6 +289,13 @@ final class AppState {
     private var lastAcceptedAt: [UUID: TimeInterval] = [:]
     private var configSyncTask: Task<Void, Never>?
     private var lastPushedConfigs: [DeviceRecognitionConfig]?
+    /// Un-observed rolling rate; `processedFPS` is published from this only
+    /// when its *displayed* (rounded) value changes, so the footer isn't
+    /// re-rendered every frame by measurement jitter.
+    @ObservationIgnored private var rawProcessedFPS: Double = 0
+    /// Device ids created from selected fields. Tracked explicitly so removal
+    /// never depends on a catalog that may already have been cleared.
+    @ObservationIgnored private var knownFieldDeviceIDs: Set<UUID> = []
 
     init(devices: [Device] = [.makeDefault(index: 1)]) {
         self.devices = devices
@@ -133,29 +312,48 @@ final class AppState {
 
     /// Publishes one processed frame's results to the UI and, when recording,
     /// appends it to the active session. MainActor-only by construction.
+    ///
+    /// Every observable write below is change-gated. This runs at frame rate,
+    /// and each ungated assignment invalidates every view reading that
+    /// property — the original per-frame writes re-rendered the whole capture
+    /// screen 12–30×/s, which is what made ROI drags feel laggy (gesture
+    /// handling shares the main thread with all that re-rendering).
     func apply(_ result: FrameResult) {
-        debugText = result.debugText
+        // Only meaningful while the raw-OCR overlay is visible; skip the
+        // per-frame write (and its view invalidation) otherwise.
+        if showDebugOverlay, debugText != result.debugText {
+            debugText = result.debugText
+        }
 
+        // A device is "active" when it has somewhere to read from. That is a
+        // stored ROI for a manually placed device, OR field-backing for a
+        // device whose ROI arrives per frame from tracked geometry. Testing
+        // `roi != nil` alone silently discarded every field-backed reading
+        // *after* the processor had already computed it.
+        let fieldBacked = fieldBackedDeviceIDs
         for device in devices {
-            guard device.roi != nil else {
-                liveReadings[device.id] = .empty
-                continue
-            }
-            var reading = liveReadings[device.id] ?? .empty
-            if let m = result.readings[device.id] {
-                if m.accepted {
-                    lastAcceptedAt[device.id] = m.timestamp
-                    if m.value.isFinite { reading.value = m.value }
+            let previous = liveReadings[device.id]
+            var reading: LiveReading
+            if device.roi == nil && !fieldBacked.contains(device.id) {
+                reading = .empty
+            } else {
+                reading = previous ?? .empty
+                if let m = result.readings[device.id] {
+                    if m.accepted {
+                        lastAcceptedAt[device.id] = m.timestamp
+                        if m.value.isFinite { reading.value = m.value }
+                    }
+                    reading.unit = m.unit ?? device.unit
+                    reading.confidence = m.confidence
+                    reading.accepted = m.accepted
                 }
-                reading.unit = m.unit ?? device.unit
-                reading.confidence = m.confidence
-                reading.accepted = m.accepted
-                reading.lastTimestamp = m.timestamp
+                let lastAccepted = lastAcceptedAt[device.id]
+                reading.locked = lastAccepted.map { result.timestamp - $0 <= Self.lockTimeout } ?? false
+                if !reading.locked { reading.value = nil }
             }
-            let lastAccepted = lastAcceptedAt[device.id]
-            reading.locked = lastAccepted.map { result.timestamp - $0 <= Self.lockTimeout } ?? false
-            if !reading.locked { reading.value = nil }
-            liveReadings[device.id] = reading
+            if reading != previous {
+                liveReadings[device.id] = reading
+            }
         }
 
         activeRecording?.append(result)
@@ -170,7 +368,12 @@ final class AppState {
         if recentFrameTimestamps.count >= 2,
            let first = recentFrameTimestamps.first,
            result.timestamp > first {
-            processedFPS = Double(recentFrameTimestamps.count - 1) / (result.timestamp - first)
+            rawProcessedFPS = Double(recentFrameTimestamps.count - 1) / (result.timestamp - first)
+            // The footer shows this rounded to an integer — publish only when
+            // that integer changes.
+            if Int(rawProcessedFPS.rounded()) != Int(processedFPS.rounded()) {
+                processedFPS = rawProcessedFPS
+            }
         }
 
         if uiMode == .selectingROI, devices.contains(where: { $0.roi != nil }) {
@@ -278,10 +481,24 @@ final class AppState {
     /// the whole device set.
     private func syncProcessorConfig() {
         guard let processor else { return }
-        let configs = devices.compactMap { device in
-            device.roi.map {
-                DeviceRecognitionConfig(id: device.id, roi: $0, format: device.displayFormat)
+        let fieldBacked = fieldBackedDeviceIDs
+        let configs = devices.compactMap { device -> DeviceRecognitionConfig? in
+            if let roi = device.roi {
+                return DeviceRecognitionConfig(id: device.id, roi: roi, format: device.displayFormat)
             }
+            // A field-backed device has no STORED roi — its geometry is a
+            // per-frame projection of the tracked target. Filtering on
+            // `roi != nil` would drop it from the processor's config set
+            // entirely, so the per-frame override would have no config to apply
+            // to and selecting a field would silently never produce a reading.
+            // It is registered here with a placeholder that is never actually
+            // recognized against: `process(frame:roiOverrides:requiringOverride:)`
+            // skips any device in `requiringOverride` that has no override this
+            // frame.
+            guard fieldBacked.contains(device.id) else { return nil }
+            return DeviceRecognitionConfig(id: device.id,
+                                           roi: .defaultROI,
+                                           format: device.displayFormat)
         }
         guard configs != lastPushedConfigs else { return }
         lastPushedConfigs = configs

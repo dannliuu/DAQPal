@@ -253,6 +253,76 @@ Recording: AppState.startRecording → RecordingSession (append-only, keeps reje
   position 1 → integer; digits == 1 forces it). Pattern preview scales down for wide
   patterns. 14 new tests across 1-digit/10-4/12-11/integer layouts. Suite: 202 effective
   passes / 0 real failures / 2 fixture-skips.
+- ✅ ROI drag-lag root cause + dynamic demo motion (2026-07-25):
+  (1) **Drag/resize lag fixed at its actual source.** The gesture code already
+  committed on `.onEnded` only — the lag was frame-rate view invalidation starving the
+  main thread: `CameraCaptureScreen.body` read `liveReadings` (alignment hint),
+  `debugText`, and the Simulator's `@Observable UIImage` preview, so the *whole screen*
+  re-evaluated 12×/s while a 1080×1920 `Image(uiImage:)` was rebuilt every frame.
+  Fixes: preview frames now flow through a non-observed `PreviewFrameRelay` straight
+  into a `CALayer.contents` (UIViewRepresentable; zero SwiftUI diffing per frame; a
+  one-shot `hasPreviewFrame` Bool handles the placeholder switch); the two per-frame
+  captions moved into leaf views (`DebugCaptionView`, `AlignmentHintView`) so their
+  reads invalidate only themselves; every observable write in `AppState.apply()` is now
+  change-gated (`LiveReading` equality skip, `debugText` only while the overlay is
+  shown, `processedFPS` published only when its rounded display value changes, raw rate
+  kept in an `@ObservationIgnored` var); the locked-glow `.shadow` (a per-tick blur
+  pass) is suppressed while a gesture is active.
+  (2) **Demo motion rig** (`DemoMotion.swift`): the synthetic display now supports
+  STEADY / YAW / PITCH / ROLL / TUMBLE / BOUNCE, cycled by tapping the SYNTHETIC chip
+  or set at launch via `-daqpal-demo-motion <mode>`. Deterministic `DemoMotionModel`
+  (pure function of elapsed time + integrated bounce state; no randomness): yaw/pitch
+  are affine foreshortening (cos of a ±55° oscillation — CoreGraphics has no
+  perspective), roll stays within ±10° (Vision's practical text-rotation tolerance),
+  bounce is the classic DVD constant-velocity reflection kept just under the ROI
+  tracker's max follow speed (0.24 norm/s), with glide-home on mode exit.
+  `SyntheticDisplayRenderer.render(text:pose:)` — the identity pose is drawing-op
+  identical to the old renderer (existing tests/fixtures unaffected);
+  `panelROI(for:)` provides ground truth for tracking tests. Verified in Simulator:
+  LOCKED holds through yaw (squeezed digits, 63.6%) and roll (65.6%); bounce
+  demonstrates the honest tracking limit — when the panel fully exits the window, OCR
+  stops accepting, so tracking stalls until the panel re-enters and is re-acquired
+  (tracking only nudges on accepted readings, by design).
+- ✅ Intelligent screen-locking layer, Round 1 — BUILT, NOT WIRED (2026-07-27, per
+  `intelligent_screen_selection_tracking_ocr_spec.md`; see `ARCHITECTURE.md` for the full
+  structural reference):
+  (1) **Frozen contract layer** (authored directly, not delegated — it determines whether the
+  rest scales): `ScreenQuad` + `Homography` (four-corner geometry, DLT solve with partial
+  pivoting, returns nil rather than garbage on singular input), `SnapState`/`SnapTuning`
+  (explicit hysteresis gaps, thresholds in normalized frame units so they are
+  resolution-independent by construction), `TrackedTarget`, `ScreenField`/`ScreenFieldCatalog`,
+  `PipelineMetrics` (pull-based, ring-buffered — metrics must never push at frame rate).
+  The load-bearing decision: **field regions live only in canonical space** and are projected
+  through the target's live homography, so they stay glued to the same physical part of a
+  display through motion with no per-field tracking.
+  (2) **Components delivered**: `ScreenCandidateDetector` (Vision rectangles as the non-OCR
+  primary signal + text/numeric density, weighted fusion), `MagneticSnapEngine`,
+  `VisionScreenTracker` + `DampedQuadTracker`, `PerspectiveNormalizer`, `ScreenFieldAnalyzer`,
+  `PipelineDebugOverlay`/`TargetGeometryOverlay`.
+  (3) **NOT WIRED.** Grep-verified: outside their own files and tests, the only references are
+  the protocol declarations. None of this has run against a live frame stream, and no claim
+  about its real-world reliability is made anywhere. Remaining: cadence scheduler, routing
+  `MeasurementProcessor` through tracked geometry, field-selection UI. Six known open defects
+  are tabulated in `ARCHITECTURE.md` §9.
+  (4) **Process note.** Adversarial review found 37 defects (4 critical) — including two that
+  would have made the feature non-functional: the snap engine treated "detector idle this
+  frame" as "nothing here", making locks unreachable at any realistic detection cadence; and
+  the tracker's entire smoothing/confidence policy lived in a class referenced by nothing but
+  its own tests, while the shipped path forwarded raw Vision confidence into thresholds
+  calibrated for a different scale. The fix round closed 35 but opened 22 new findings — that
+  non-converging ratio is why Round 1 stopped there rather than running a third pass.
+  Notably the coordinate-space conversions everyone suspected were all correct; one agent
+  correctly rejected an instruction in my own brief that would have mirrored every field
+  coordinate.
+- ✅ Selection-lag root cause + fix, MEASURED (2026-07-27): cause was frame-rate invalidation of
+  the whole capture screen (root `body` read `liveReadings`/`debugText`/the Simulator preview
+  image, all written per frame). Fixes: preview → `CALayer` via a non-observed relay, per-frame
+  reads pushed into leaf views, every observable write change-gated, glow shadow suppressed
+  mid-gesture. **The first version of this fix was inert**: `LiveReading.lastTimestamp` was
+  written every frame and read by nothing, so the equality gate suppressed zero invalidations —
+  caught by `CapturePerformanceTests`, not by inspection. Field removed. 10 regression tests
+  assert zero UI invalidations across 60 unchanged frames. No FPS/CPU claim is made: the
+  diagnosis was observation-graph analysis, not an Instruments profile.
 - ⬜ Remaining: import-flow Simulator walkthrough (file picker is hard to script);
   physical-device validation (camera, real-DMM OCR, real iPhone slo-mo footage, real
   video-recording thermals) — the gates the Simulator cannot cover.

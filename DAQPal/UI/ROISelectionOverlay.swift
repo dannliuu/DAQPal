@@ -28,12 +28,20 @@ struct ROISelectionOverlay: View {
     /// `videoDimensions`.
     private static let fallbackContentSize = CGSize(width: 1080, height: 1920)
 
+    private var fieldBacked: Set<UUID> { appState.fieldBackedDeviceIDs }
+
     var body: some View {
         GeometryReader { geo in
             let mapper = AspectFillMapper(contentSize: appState.videoDimensions ?? Self.fallbackContentSize,
                                           containerSize: geo.size)
             ZStack {
-                ForEach(appState.devices) { device in
+                // Field-backed devices are excluded: their geometry is a
+                // per-frame projection of the tracked target, not a stored ROI,
+                // so this overlay would draw each one as a centered "DRAG TO
+                // PLACE" ghost. Those ghosts stack on top of each other AND sit
+                // above `FieldSelectionOverlay`, swallowing the taps meant to
+                // select a field. `FieldSelectionOverlay` draws these devices.
+                ForEach(appState.devices.filter { !fieldBacked.contains($0.id) }) { device in
                     ROIWindowView(device: device,
                                  mapper: mapper,
                                  liveReading: appState.liveReadings[device.id] ?? .empty)
@@ -131,13 +139,19 @@ private struct ROIWindowView: View {
         return "\(device.name) region of interest, searching"
     }
 
+    /// The locked-glow shadow is suppressed while a gesture is active: a
+    /// `.shadow` is a blur pass re-rendered on every `onChanged` tick
+    /// (60–120 Hz), and dropping it during the drag is imperceptible but
+    /// keeps the gesture's render cost to a plain stroke.
+    private var showsGlow: Bool { isLocked && liveDragRect == nil }
+
     @ViewBuilder
     private func window(in rect: CGRect) -> some View {
         ZStack {
             RoundedRectangle(cornerRadius: 6)
                 .strokeBorder(borderColor, style: strokeStyle)
-                .shadow(color: isLocked ? Theme.brandYellow.opacity(0.45) : .clear,
-                       radius: isLocked ? 8 : 0)
+                .shadow(color: showsGlow ? Theme.brandYellow.opacity(0.45) : .clear,
+                       radius: showsGlow ? 8 : 0)
                 .contentShape(Rectangle())
                 .gesture(windowDragGesture)
 

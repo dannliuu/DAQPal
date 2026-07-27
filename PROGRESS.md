@@ -1,9 +1,10 @@
 # DAQPal — Development Progress
 
-**Date:** 2026-07-22 · last updated 2026-07-23
+**Date:** 2026-07-22 · last updated 2026-07-27
 **Measured against:** `Design_notes/design_handoff_daqpal_ios/Visual_Instrument_Data_Logger_Agent_Development_Specification.md` (§35 milestone plan, §38 Definition of Done, §40 concrete iOS design)
+**Also measured against:** `intelligent_screen_selection_tracking_ocr_spec.md` (build gates 0–16) — see the dedicated section below
 **UI authority:** `Design_notes/design_handoff_daqpal_ios/README.md` (Fluke-yellow design handoff)
-**Companion doc:** `IMPLEMENTATION_NOTES.md` (decisions, naming audit, deviations)
+**Companion docs:** `IMPLEMENTATION_NOTES.md` (chronological decisions/deviations) · `ARCHITECTURE.md` (structural reference, root-cause analysis, integration status)
 
 ---
 
@@ -22,11 +23,14 @@ real-DMM OCR accuracy on physical hardware.
 
 | Verification gate | Status |
 |---|---|
-| Integration build (`xcodebuild`) | ✅ succeeded (2026-07-23, iPhone 17 Pro simulator destination, zero compile errors) |
-| Unit tests on Simulator | ✅ **116 passed, 0 failed, 2 skipped** (the 2 skips are the fixture-harness tests, which by design skip until a real `dmm_001.mov` DMM fixture is recorded — no fabricated accuracy) |
+| Integration build (`xcodebuild`) | ✅ succeeded (2026-07-27, iPhone 17 Pro simulator destination, zero compile errors) |
+| Unit tests on Simulator | ✅ **420 effective passes, 0 real failures, 2 skipped** (2026-07-27). The 2 skips are the fixture-harness tests, which by design skip until a real `dmm_001.mov` DMM fixture is recorded — no fabricated accuracy. One test reds under parallel clones (`VideoImportTests.testEndToEnd_slowMotionFixture…`, AVAssetWriter/VideoToolbox contention) and passes on serial retry — documented retry-first policy |
 | End-to-end pipeline (no camera) | ✅ `SyntheticPipelineTests` — rendered frame → Vision OCR → format/physical/temporal validation → accepted at the rendered value; garbage frame never accepted |
 | Video import incl. slow-mo normalization | ✅ `VideoImportTests` — H.264 fixture encoded in-test → decode → ½× time normalization → recognized and accepted at the rendered value with the halved timeline |
 | App launch + UI walkthrough on Simulator | ✅ capture (ROI lock, live reading, recording strip) + recorded-session results verified via debug-launch-argument screenshots (2026-07-23); import flow walkthrough pending |
+| Selection-window lag root cause + fix | ✅ diagnosed and **regression-tested at the mechanism level** (`CapturePerformanceTests`, 10/10) — see `ARCHITECTURE.md` §2–§3. No FPS/CPU figure is claimed: the diagnosis was observation-graph analysis, not an Instruments profile |
+| Dynamic motion / tracking stress rig | ✅ 9 modes (steady, yaw, pitch, roll, tumble, bounce, scale, driftDiagonal, stress) + opt-in deterministic optics degradation; visually verified in Simulator, 12 unit tests |
+| Intelligent screen-locking layer | ⚠️ **built and unit-tested, NOT wired to the app** — grep-verified to have no in-app caller; has never run against a live frame stream. 6 known open defects tabulated in `ARCHITECTURE.md` §9 |
 | Camera / real-DMM validation on physical iPhone | ⬜ requires physical hardware (cannot be done in Simulator) |
 
 ---
@@ -113,6 +117,47 @@ Outstanding: live in-app 240 fps capture with selective frame processing (spec �
 OCR benchmarking, ONNX/PP-OCRv6, specialized seven-segment model, instrument profiles,
 automatic format inference, Android. The `OCRManager` seam and `FrameSource` fixture
 architecture exist so these can be added without restructuring.
+
+---
+
+## Intelligent screen-selection spec — build gate status
+
+Measured against `intelligent_screen_selection_tracking_ocr_spec.md`. Structural detail lives
+in `ARCHITECTURE.md`; this is the gate-by-gate scorecard.
+
+| Gate | Phase | Status |
+|---|---|---|
+| 0 | Repository reconnaissance | ✅ data flow mapped, per-stage isolation documented (`ARCHITECTURE.md` §1) |
+| 1 | Performance root cause | ✅ root cause identified and written up (§2). ⚠️ **Deviation:** the spec asks for FPS/CPU/GPU/memory profiling; the diagnosis was observation-graph analysis instead. No profiler numbers exist and none are claimed |
+| 2 | Selection performance fixed | ✅ fixed + regression test (§3). UI was already decoupled from OCR/CV before this round; the defect was view invalidation, not blocking work |
+| 3 | Motion test environment | ✅ translation, yaw, pitch, roll, combined, bouncing-DVD, scale, stress mode, configurable degradation (blur/noise/occlusion/brightness), all deterministic |
+| 4 | Candidate screen detection | 🟡 `ScreenCandidateDetector` built + unit-tested (Vision rectangles as the non-OCR primary signal, text/numeric density contributing, weighted fusion, temporal stability). **Not wired**; 1 known open defect |
+| 5–6 | Magnetic acquisition + state machine | 🟡 `MagneticSnapEngine` built, 36 tests incl. detector-cadence lock reachability and hysteresis. **Not wired**; 2 known open defects |
+| 7 | Screen-aware target lock | 🟡 `TrackedTarget` + four-corner geometry + reference-quad scale/roll deltas. **Not wired** |
+| 8 | Hierarchical tracking | 🟡 `VisionScreenTracker` (VNTrackRectangleRequest) + `DampedQuadTracker` smoothing/confidence, 43 tests. **Not wired**; 2 known open defects |
+| 9 | Perspective normalization | 🟡 `Homography` (DLT, partial pivoting) + `PerspectiveNormalizer` (CIPerspectiveCorrection), orientation-verified. **Not wired** |
+| 10 | Screen understanding | 🟡 `ScreenFieldAnalyzer` — multi-field detection with label/unit association and format inference. **Not wired**; 1 known open defect |
+| 11 | Modular OCR architecture | ✅ pre-existing `OCREngine`/`OCRManager` seam (Vision, dual-pass); benchmark harness measured in `OCR_RESEARCH.md` |
+| 12 | Multi-field detection + user selection | 🟡 model + analyzer + catalog merge complete. ⬜ **field-selection UI not built** |
+| 13 | Format-aware OCR | ✅ pre-existing and shipping (grammar, range, rate-of-change, temporal filter, confidence fusion, typed rejections) |
+| 14 | End-to-end pipeline | ⬜ **not built** — cadence scheduler and tracked-geometry routing are the missing links |
+| 15 | Performance instrumentation | 🟡 `PipelineMetrics` (pull-based, ring-buffered, p95) + `PipelineDebugOverlay` built. **Overlay not mounted** |
+| 16 | Automated testing | 🟡 ~150 new unit tests for the layer; ⬜ no integration/end-to-end tests, since there is no integrated path yet |
+| 17 | Stress validation | ⬜ **not started** — requires a wired pipeline |
+| 18 | Documentation | ✅ `ARCHITECTURE.md` |
+
+Legend: ✅ done · 🟡 built and unit-tested but not integrated · ⬜ not started
+
+**The honest headline:** gates 0–3 are genuinely met. Gates 4–10 exist as tested components
+with no caller — a working library, not a working feature. Gate 14 is the keystone that
+converts one into the other.
+
+**Process note.** Adversarial review of the layer found 37 defects (4 critical), two of which
+would have made the feature silently non-functional: the snap engine treated "detector idle
+this frame" as "nothing detected", making locks unreachable at any realistic detection
+cadence; and the tracker's whole smoothing/confidence policy lived in a class referenced by
+nothing but its own tests. The fix round closed 35 and opened 22 new findings — that
+non-converging ratio is why Round 1 stopped there rather than running a third pass.
 
 ---
 
@@ -320,7 +365,22 @@ what the current MVP slice (Milestones 1–7) can already do versus what needs a
 3. ~~Run unit tests~~ ✅ 113 passed / 0 failed / 2 fixture-skips.
 4. ~~Adversarial multi-agent code review~~ ✅ 7 confirmed findings fixed, re-built,
    re-tested (113 / 0 / 2).
-5. Launch app in Simulator (synthetic source), walk the full loop
-   ROI → format → live reading → record → results → CSV, capture screenshots.
-6. Physical-device session: camera permission, live preview orientation, real-DMM OCR —
-   the only environment where Milestones 1–2 can truly pass.
+5. ~~Launch app in Simulator, walk the full loop~~ ✅ capture → record → results verified by
+   screenshot; import-flow walkthrough still pending (file picker is hard to script).
+6. ~~Selection-window lag: root cause + fix~~ ✅ diagnosed, fixed, regression-tested
+   (`ARCHITECTURE.md` §2–§3).
+7. ~~Dynamic motion / tracking stress environment~~ ✅ 9 modes + optics degradation.
+8. ~~Intelligent screen-locking layer, Round 1~~ ✅ built and unit-tested, **not wired**.
+9. **Wire the layer into the app** (spec Gate 14 — the keystone). In order:
+   a. Cadence scheduler: detection rarely, tracking every frame, OCR in between, newest-frame
+      policy preserved.
+   b. Route `MeasurementProcessor` through tracked geometry (canonical-space field regions)
+      instead of a static `NormalizedROI`.
+   c. Field-selection UI: overlays on the analyzed display, tap to select, per-field format.
+   d. Mount `PipelineDebugOverlay` behind the existing debug toggle.
+10. Close the 6 known open defects in `ARCHITECTURE.md` §9 before trusting the layer on real
+    hardware.
+11. Physical-device session: camera permission, live preview orientation, real-DMM OCR —
+    the only environment where Milestones 1–2, and any real tracking claim, can truly pass.
+12. Instruments profile on device to replace the mechanism-level performance evidence with
+    actual FPS/CPU/memory figures (spec Gate 1 asks for these; they do not exist yet).

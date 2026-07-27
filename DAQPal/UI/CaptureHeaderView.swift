@@ -25,6 +25,11 @@ struct CaptureHeaderView: View {
                 profileChip
                 deviceCountChip
                 debugToggleChip
+                // Own subview: its enablement reads `snapState`, which the
+                // capture pipeline republishes on acquisition transitions. The
+                // read stays out of this body so a transition re-renders only
+                // the three chips, not the whole header.
+                ScreenLockChips()
                 importChip
                 addDeviceChip
             }
@@ -107,13 +112,86 @@ struct CaptureHeaderView: View {
         .accessibilityLabel("Add device")
     }
 
-    private func chipText(_ text: String) -> some View {
-        Text(text)
-            .font(Theme.ui(9, weight: .heavy))
-            .tracking(0.54)
-            .lineLimit(1)
-            .fixedSize()
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+    private func chipText(_ text: String) -> some View { captureChipText(text) }
+}
+
+/// Shared chip typography/padding — one definition so the intelligent-path
+/// chips can't drift from the originals.
+private func captureChipText(_ text: String) -> some View {
+    Text(text)
+        .font(Theme.ui(9, weight: .heavy))
+        .tracking(0.54)
+        .lineLimit(1)
+        .fixedSize()
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+}
+
+/// AUTO / RELEASE / RESCAN — the controls for the intelligent screen-lock path
+/// (spec Gate 14). AUTO is the master switch; the other two only mean anything
+/// once a display is locked, so they follow `importChip`'s
+/// disabled-and-dimmed pattern rather than appearing and disappearing (which
+/// would reflow the chip row).
+private struct ScreenLockChips: View {
+    @Environment(AppState.self) private var appState
+
+    /// True in `locked`, `trackingDegraded` and `reacquisition` — the states in
+    /// which there is a target to release or re-analyze.
+    private var hasLock: Bool { appState.snapState.isLockedOrTracking }
+
+    var body: some View {
+        autoChip
+        releaseChip
+        rescanChip
+    }
+
+    private var autoChip: some View {
+        let on = appState.screenLockEnabled
+        return Button {
+            appState.screenLockEnabled.toggle()
+        } label: {
+            captureChipText("AUTO")
+                .foregroundStyle(on ? Theme.brandYellow : Theme.ink)
+                .background(RoundedRectangle(cornerRadius: 4).fill(on ? Theme.ink : Color.clear))
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Theme.heavyRule, lineWidth: 1))
+                // Chip stays visually compact; the negative inset expands the
+                // tap area to the required ≥44 pt.
+                .contentShape(Rectangle().inset(by: -13))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Toggle automatic screen detection and lock")
+        .accessibilityValue(on ? "On" : "Off")
+    }
+
+    private var releaseChip: some View {
+        let enabled = hasLock
+        return Button {
+            appState.releaseScreenLock()
+        } label: {
+            captureChipText("RELEASE")
+                .foregroundStyle(Theme.ink.opacity(enabled ? 1 : 0.35))
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Theme.heavyRule, lineWidth: 1))
+                .contentShape(Rectangle().inset(by: -13))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel("Release the locked display")
+        .accessibilityValue(enabled ? "Available" : "No display locked")
+    }
+
+    private var rescanChip: some View {
+        let enabled = hasLock
+        return Button {
+            appState.reanalyzeLockedScreen()
+        } label: {
+            captureChipText("RESCAN")
+                .foregroundStyle(Theme.ink.opacity(enabled ? 1 : 0.35))
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Theme.heavyRule, lineWidth: 1))
+                .contentShape(Rectangle().inset(by: -13))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel("Rescan the locked display for fields")
+        .accessibilityValue(enabled ? "Available" : "No display locked")
     }
 }

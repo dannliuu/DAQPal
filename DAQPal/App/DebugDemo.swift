@@ -7,6 +7,8 @@
 //    -daqpal-auto-roi         place device 1's ROI on the synthetic display
 //    -daqpal-auto-record N    start recording ~2s after launch, stop after N s
 //    -daqpal-demo-results     open the results screen with fabricated demo data
+//    -daqpal-demo-motion M    synthetic display motion: steady|yaw|pitch|roll|
+//                             tumble|bounce (ROI-tracking stress rig)
 //  Demo data is clearly synthetic (deterministic sine series) and exists only
 //  for layout/interaction verification — it never ships in release builds and
 //  is never a claim about recognition accuracy.
@@ -17,7 +19,7 @@ import Foundation
 
 @MainActor
 enum DebugDemo {
-    static func applyLaunchArguments(to appState: AppState) {
+    static func applyLaunchArguments(to appState: AppState, captureStack: CaptureStack? = nil) {
         let args = ProcessInfo.processInfo.arguments
 
         if args.contains("-daqpal-auto-roi"), var device = appState.devices.first {
@@ -25,8 +27,43 @@ enum DebugDemo {
             appState.updateDevice(device)
         }
 
+        // "-daqpal-demo-motion bounce" etc. — see `DemoMotion` cases. Applied
+        // before `CaptureStack.start()`, so the value seeds the synthetic
+        // source at construction.
+        if let idx = args.firstIndex(of: "-daqpal-demo-motion"),
+           idx + 1 < args.count,
+           let motion = DemoMotion(rawValue: args[idx + 1].lowercased()) {
+            captureStack?.setDemoMotion(motion)
+        }
+
         if args.contains("-daqpal-save-video") {
             appState.saveVideoEnabled = true
+        }
+
+        // Turns the intelligent screen-locking pipeline on at launch so a
+        // Simulator run exercises the live path (detection → snap → lock →
+        // tracking → normalization → field analysis) without GUI automation.
+        if args.contains("-daqpal-screen-lock") {
+            appState.screenLockEnabled = true
+        }
+
+        // Auto-selects the first N numeric fields once analysis produces them,
+        // so a headless run can reach the "fields are being captured through
+        // tracked geometry" state. Polls rather than observing because the
+        // catalog arrives asynchronously from the pipeline.
+        if let idx = args.firstIndex(of: "-daqpal-auto-select-fields"),
+           idx + 1 < args.count, let wanted = Int(args[idx + 1]) {
+            Task {
+                for _ in 0..<60 {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    let numeric = appState.fieldCatalog?.fields.filter { $0.kind == .numeric } ?? []
+                    guard !numeric.isEmpty else { continue }
+                    for field in numeric.prefix(wanted) where !field.isSelected {
+                        appState.toggleFieldSelection(field.id)
+                    }
+                    break
+                }
+            }
         }
 
         if args.contains("-daqpal-format-sheet") {

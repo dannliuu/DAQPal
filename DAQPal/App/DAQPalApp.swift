@@ -50,7 +50,7 @@ struct RootView: View {
             let stack = CaptureStack(appState: appState)
             captureStack = stack
             #if DEBUG
-            DebugDemo.applyLaunchArguments(to: appState)
+            DebugDemo.applyLaunchArguments(to: appState, captureStack: stack)
             #endif
             await stack.start()
         }
