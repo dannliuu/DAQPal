@@ -17,15 +17,14 @@ Per master §7: `DAQPal/Instrumentation/*`, `GestureLatencyProbe.swift`, `Render
 
 ## Tasks
 
-### C0 — Budget-test audit
-`DAQPalTests/PipelineBudgetTests.swift` (639 lines) is the only Release-build budget assertion in the repo and is documented in **no** markdown (BASELINES.md points at it as the sole source of shipping-latency truth).
-- Read it; inventory which of master §8's budgets it actually asserts, in which build config, against which harness.
-- **Evidence gate**: coverage table (budget → asserted? config? gap?) reported to the master ledger. This is the map for C2.
+### C0 — Budget-test audit — **DONE (pre-flight audit, 2026-08-03)**
+Result: `PipelineBudgetTests` asserts **0 of the 10** §8 wall-clock figures — deliberately mechanism-level (its own header disclaims wall-clock budgets). What it DOES pin (keep these green, they're valuable): homography solves scale O(targets) not O(fields) per frame; `MeasurementProcessor` per-frame jobs O(configured devices), never O(override-map); metrics ring-buffer cap exactly 240; disabled instrumentation completely inert; percentile arithmetic correctness (incl. the p99-exposes-tail case). BASELINES.md's claim that shipping performance "is asserted in `PipelineBudgetTests` against a Release build" is **false** — no wall-clock budget assertion exists anywhere. Consequence: C2 is green-field; detail lives in the master ledger + §8 note.
 
-### C1 — Populate `PipelineMetrics`
-The stage enum exists (`.capture .tracking .detection .analysis .ocr .endToEnd`, p95/p99) with stages unpopulated.
-- C implements: aggregation, ring-buffer storage, test-accessible export, `PipelineDebugOverlay` live display.
-- **Hook requests** (owners land at G1): `FrameProcessor` drain timestamps (shared file — gate edit); `ScreenLockPipeline` per-stage spans (WS-A); `MeasurementProcessor` OCR/validation spans (WS-B).
+### C1 — Complete `PipelineMetrics` (audit-corrected 2026-08-03: it's HALF-wired, not unpopulated)
+Already recording real spans `[Debug only]`: `.tracking` (`VisionScreenTracker.swift:244,259,309`), `.detection` (`ScreenCandidateDetector.swift:199`), `.analysis` (`ScreenFieldAnalyzer.swift:101`, `PerspectiveNormalizer.swift:70`, `NumberBandSplitter.swift:120`, `SegmentCellScanner.swift:217`). Never recorded anywhere: `.capture`, `.ocr`, `.endToEnd` (absence proven at `PipelineBudgetTests.swift:610-611, 628-633`).
+- **Critical gotcha**: `PipelineMetrics.isEnabled` defaults **false outside DEBUG** (`PipelineMetrics.swift:269-278`). C1 must add an explicit Release-measurement enablement path (env var / benchmark scheme flag) or every DD1 Release number will silently be empty.
+- C implements: the enablement path, test-accessible export, and a verification pass over the existing snapshot/display path (`PipelineDebugOverlay.swift:27`); aggregation + 240-sample ring already exist and are test-pinned.
+- **Hook requests** (owners land at G1) — now only for the missing stages: `FrameProcessor` drain `.capture` timestamps (shared file — gate edit); `MeasurementProcessor` `.ocr` + `.endToEnd` spans (WS-B). Tracking/detection/analysis hooks already exist — verify, don't duplicate.
 - **Evidence gate**: metrics visibly populate in a synthetic-source run; unit tests for aggregation math; overhead of the instrumentation itself measured and negligible (`[sim]` first, device at DD1).
 
 ### C2 — Mechanism gates runnable without the device

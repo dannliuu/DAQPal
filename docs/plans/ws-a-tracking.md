@@ -17,29 +17,25 @@ Per master §7: `DAQPal/Tracking/*`, `DisplayPose3D.swift`, `PoseTrajectory.swif
 
 ## Tasks (in order; A1 first — it is the top-priority defect in the implementation report §K)
 
-### A1 — Recovery re-seed proximity/identity gate
-`VisionScreenTracker.swift`: after 5 consecutive rejections, recovery re-seeds from the detector with **no proximity or identity check** — the lock can silently migrate to a different object — and re-seed confidence is blended with Vision's own score, which can mask a genuine `.lost`.
-- Add a proximity gate (center distance + IoU vs the last *verified* quad) and an identity check (appearance reference comparison, reusing `AppearanceSentinel`'s NCC machinery) before accepting a re-seed.
-- Separate re-seed provenance from Vision-track confidence; a re-seeded track must not report verified-level confidence until `TrackVerifier` corroborates it.
-- **Evidence gate**: new unit test with two synthetic displays where the old code migrates and the new code refuses; bounce trace still 0 false-healthy; suite green.
+### A1–A3 — audit-verified as ALREADY FIXED (2026-08-03): confirm and close
+The read-only pre-flight audit found all three defects fixed in the current tree, with tests. ARCHITECTURE.md §9's defect table is stale on them — do **not** re-implement:
+- **A1** re-seed gating: `TrackedQuadGate.admit()` routes recovery re-seeds through `QuadSanity.isOrientationContinuous` + `isPlausibleReseed` (bbox-IoU / size-scaled center distance) — `VisionScreenTracker.swift:506-553`; tests `QuadTrackerTests.swift:582,646,668`.
+- **A2** anchor freeze: shape-derived `uprightLabeling(of:)` + continuity relabeling replaced the position-based anchor — `ScreenCandidateDetector.swift:487-578`, `ScreenQuad.swift:170-183`.
+- **A3** release/grace: dedicated `detectorID` suppression channel + `nil`-vs-`[]` handling — `MagneticSnapEngine.swift:149-162, 216-253, 259-276`; tests `MagneticSnapEngineTests.swift:823,907`.
 
-### A2 — `ScreenCandidateDetector` corner-anchor freeze
-Aspect ratio collapses toward ~0 and can permanently block lock.
-- Reject degenerate quads (aspect/area floor) and reset the frozen anchor state.
-- **Evidence gate**: regression test reproducing the freeze from the defect description, now recovering.
+Close procedure (one short session): run the named tests plus the bounce trace; confirm each fix covers the *original* failure narrative — especially A1's second half (a re-seeded track must not report verified-level confidence before `TrackVerifier` corroborates; verify, don't assume); then mark closed in the master ledger. Any uncovered half reopens as a real task.
 
-### A3 — `MagneticSnapEngine` release + grace-period fixes
-`release()` suppression bug can re-grab a display the user just rejected; `nil` vs `[]` candidate lists are conflated in the grace period.
-- **Evidence gate**: new cases in `MagneticSnapEngineTests` (user-rejection cool-down honored; `nil`/`[]` distinguished); suite green.
+### A-triage — `DragLatencyUITests` failure
+`DAQPalUITests/DragLatencyUITests.swift:82` currently fails in the audited suite run (5 gesture callbacks where >10 expected for a 0.4s drag). This matches the documented **simulator-only** gesture-starvation pattern. Reproduce; if simulator-environmental, quarantine with a written justification + device-day verification item; if real, it becomes a full task.
 
 ### A4 — Numeric dominance + the shared grammar contract
-`ScreenFieldAnalyzer.numericIsDominant` misclassifies "230 VAC" / "12 PSI" as labels; its `numberPattern` regex disagrees with `FormatValidator` (B-owned).
+`ScreenFieldAnalyzer.numericIsDominant` misclassifies "230 VAC" / "12 PSI" as labels; its `numberPattern` regex disagrees with `FormatValidator` (B-owned). Audit anchors: `ScreenFieldAnalyzer.swift:352-353` (regex omits `,`), `:324-328` (doc comment claiming exact parity with `FormatValidator` — currently false), `:437-447` (`numericIsDominant`); `FormatValidator.swift:542-543`.
 - Fix unit-suffix-aware classification.
 - **G1 agenda item (joint with WS-B)**: agree ONE numeric-token grammar (digits, separators incl. `,`, sign, unit suffixes, leading-separator forms like `.5`). A implements the analyzer side; B the validator side; the settled grammar is recorded in the master decision registry.
 - **Evidence gate**: `ScreenFieldAnalyzerTests` cover the misclassified cases; grammar parity test (same token set accepted by both sides) added at G1.
 
 ### A5 — Overlay correctness
-Hit-testing uses the bounding box (~1.9× the true quad area at 30° roll — taps visually outside the display still hit it); `FieldSelectionOverlay` retains the per-frame-published-value-read-inside-gesture anti-pattern already fixed in `ROISelectionOverlay`.
+Hit-testing uses the bounding box (~1.9× the true quad area at 30° roll — taps visually outside the display still hit it); `FieldSelectionOverlay` retains the per-frame-published-value-read-inside-gesture anti-pattern already fixed in `ROISelectionOverlay`. Audit anchors: `FieldSelectionOverlay.swift:132` (`OverlayQuadGeometry.boundingRect`), `:144-159` (`Rectangle()` contentShape); the bbox helper lives at `PipelineDebugOverlay.swift:169-196`.
 - Point-in-quad hit-testing; port the fixed gesture pattern (gesture state isolated from per-frame published geometry).
 - **Evidence gate**: hit-test unit tests at 0°/15°/30° roll (inside-quad hits, outside-quad-inside-bbox misses); `OverlayGeometryTests` + `DragStabilityTests` green; no new per-frame invalidations (`CapturePerformanceTests` pattern).
 

@@ -18,13 +18,13 @@ Per master §7: `DAQPal/OCR/*`, `DAQPal/Processing/*`, `DAQPal/Corpus/*`, `DAQPa
 ## Tasks
 
 ### B1 — Wire `DecimalRescue` into `MeasurementProcessor`
-The module is written, unit-tested (23/23), measured working (`"80.8"` → position 2 @ 0.97 confidence) — and has **zero call sites** (grep-verified 2026-08-02). The +506-line FormatValidator rewrite shipped alongside it changed the device benchmark by exactly nothing (byte-identical re-run).
+The module is written, unit-tested (23/23), measured working (`"80.8"` → position 2 @ 0.97 confidence) — and has **zero call sites** (grep-verified 2026-08-02; re-confirmed by the 2026-08-03 audit: every non-self grep hit is a comment). The +506-line FormatValidator rewrite shipped alongside it changed the device benchmark by exactly nothing (byte-identical re-run).
 - Insertion point: post-OCR, pre-acceptance — rescue runs when (a) OCR found no separator, (b) separator confidence is low, or (c) the format prior expects a decimal the text lacks.
 - Fusion contract (per ARCHITECTURE's design intent): rescue **corroborates or vetoes** via `ConfidenceEngine` — it never solely authors a value. Its `confidentAbsence` ceiling discipline (0.5 between-digits cap) carries over.
 - **Evidence gate**: integration tests (rescue fires on the designed triggers, never on clean reads); 65/72 currently-correct benchmark cases unchanged; suite green.
 
 ### B2 — Feed `DisplayFormatInference` into `TemporalConsensus`
-The format prior is passed as `nil` at `MeasurementProcessor.swift:454` today.
+The format prior is passed as literally `formatPrior: nil,` at `MeasurementProcessor.swift:454` (audit-confirmed verbatim 2026-08-03; `DisplayFormatInference` has zero live-path references).
 - Wire the inferred format as the consensus prior; prior resolves ambiguous decimal position; a *conflicting* prior forces refusal, never a silent override.
 - **Evidence gate**: unit tests — ambiguous stream + correct prior → resolved; ambiguous stream + wrong prior → refused; no prior → current behavior.
 
@@ -34,13 +34,14 @@ All 7 device-benchmark failures are one class: leading decimal, no integer digit
 - Add the ambiguous-decimal trigger for the bare-integer-after-discarded-glyph pattern → refusal when unresolved (B1/B2 may then resolve it).
 - **Evidence gate**: `DecimalBenchmarkTests` re-run `[sim]`: power-of-ten errors 7/72 → 0 wrong (refusals permitted, counted separately); device re-run at next device day. Leading-separator cases added to `DecimalIntegrityTests`.
 
-### B4 — `SegmentCellScanner` audit against the D4 checklist
-The scanner landed in `4f9ca85`; whether it implements the full research plan (OCR_SEGMENT_RESEARCH.md) is unverified. Audit and complete:
-- Gap-tolerant column-scan segmentation (a column with any foreground pixel starts a digit) — the fix for connected-components seeing 21 fragments and 0 digits on a clean "80.8".
-- Row-splitting before segmentation (target device shows two rows: main reading + "MAX" legend).
-- Decimal detected by size-ratio vs largest digit cell, positioned by column order — no guessed positions.
-- Actual integration: something in the recognition path must *call* it (`SevenSegmentSampler` handoff) — a second orphan-module outcome is unacceptable.
-- **Evidence gate**: scanner tests cover the "80.8" CC-failure fixture end-to-end (3 digit cells + decimal); a segment-face read flows through the live pipeline in a corpus test.
+### B4 — Fix, then wire, `SegmentCellScanner` (audit-resolved 2026-08-03: it IS a second orphan, with failing tests)
+The pre-flight audit answered B4's open questions. Checklist state: gap-tolerant column scan **implemented** (`SegmentCellScanner.swift:288-313` — column ink accumulated over the full band height, interior gaps don't split digits); decimal-by-size **implemented** (`:316` tallest-cell reference, `:398-427` classification, `:494-499`); row-splitting **partial** (`:216-264` — bands→rows mechanism exists; two-row "MAX"-legend case not fully validated); wiring **MISSING** — all 6 production grep hits are self-references; nothing calls it.
+
+Work, in order:
+1. **Fix the 4 failing tests first** (failing in the audited suite run): `SegmentCellScannerTests.swift:87` (nil decimal positions for DSEG7 "0.001"/"99.9"/"100.0"), `:131` (wrong position on moderate-inverted preset "12.345"/"100.0"), `:173` (DSEG7 "99.9" reconstructed as "000" through `SevenSegmentSampler`), `:200` (proportional face, wrong position). These are decimal-position/reconstruction logic bugs in the newest commit — the suite cannot go green without them.
+2. Complete row-splitting validation for the two-row (main + "MAX") layout.
+3. Wire it into the recognition path for segment faces (`SevenSegmentSampler` handoff; audit points at the `MeasurementProcessor.swift:515-521` vicinity) — a *third* orphan outcome is unacceptable.
+- **Evidence gate**: all `SegmentCellScannerTests` green; the "80.8" CC-failure fixture yields 3 digit cells + decimal end-to-end; a segment-face read flows through the live pipeline in a corpus test.
 
 ### B5 — Low-contrast binarization + real-photo fixture
 Every threshold to date was tuned on synthetic renders of much higher contrast than the real target (IR gun: Michelson 0.20 — segments ~77 luma on ~117 background).

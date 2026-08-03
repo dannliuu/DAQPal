@@ -74,28 +74,35 @@ Settled decisions. To change one: add a `PROPOSED:` row beneath it with your evi
 
 *(Every agent session appends/edits here. Last reconciled: 2026-08-03, from the four-reader doc synthesis.)*
 
-**Test suite baseline: 733 passed / 0 failed / 2 skipped** `[sim, Debug, serial]` (VALIDATION_FRAMEWORK.md run). PROGRESS.md's 113/116/616 counts are historical snapshots — do not cite.
+**Test suite (audited 2026-08-03, full serial run): 857 passed / 5 failed / 2 skipped** `[sim iPhone 16 Pro iOS 18.4, Debug, serial]` — 864 cases, cross-verified three ways; raw log `/tmp/daqpal_audit/test_run.log`. Failures: 4× `SegmentCellScannerTests` (`:87` nil decimal positions for DSEG7 "0.001"/"99.9"/"100.0"; `:131` wrong position on inverted preset; `:173` "99.9" reconstructed as "000"; `:200` proportional-face wrong position) → WS-B B4; 1× `DragLatencyUITests.swift:82` (5 gesture callbacks where >10 expected — matches the documented simulator-only starvation pattern) → WS-A triage. The 2 skips are the known `RecognitionPipelineTests` fixture skips. Historical counts — 733/0/2 (VALIDATION_FRAMEWORK.md), 113/116/616 (PROGRESS.md) — are superseded; do not cite.
 
 ### Built and wired (trust it)
 - Full capture→OCR→validation→CSV pipeline; `ScreenLockPipeline` actor wired inline in `FrameProcessor` drain (6 stages incl. `AppearanceSentinel` 1b, `TrackVerifier` 2b).
 - Transit veto: 0 LOCKED-while-unverified across 81-pass bounce trace `[sim rig]`.
 - Invalidation storm fixed: 60 unchanged frames → 0 UI invalidations (`CapturePerformanceTests` 10/10).
 - Sub-field selection (`NumberBandSplitter` → `WindowFieldAnalyzer` → `WindowSubFieldLayer`); analyzer 6.5ms/analysis `[host? Release]`.
-- `SegmentCellScanner` landed (`4f9ca85`) — integration state vs D4 checklist **unverified** (WS-B task B4).
+- `SegmentCellScanner` landed (`4f9ca85`) — audit 2026-08-03: algorithm checklist mostly implemented (gap-tolerant column scan ✓ `SegmentCellScanner.swift:288-313`; decimal-by-size ✓ `:316,398-427,494-499`; row-splitting partial `:216-264`) but **orphaned and failing 4 of its own tests** — see orphan list and defects (WS-B B4).
 
-### Built but NOT wired (the orphan list — highest-leverage fixes)
-- `DecimalRescue`: zero call sites in `DAQPal/` (grep-verified 2026-08-02). → WS-B B1
-- `DisplayFormatInference` → `TemporalConsensus` format prior: `nil` at `MeasurementProcessor.swift:454`. → WS-B B2
-- `PipelineMetrics` stage latencies: struct exists, stages unpopulated. → WS-C C1
+### Built but NOT wired (the orphan list — highest-leverage fixes; all audit-confirmed 2026-08-03)
+- `DecimalRescue`: zero production call sites (12 grep hits; every hit outside its own file is a comment). → WS-B B1
+- `DisplayFormatInference` → `TemporalConsensus` format prior: still literally `formatPrior: nil,` at `MeasurementProcessor.swift:454`; `DisplayFormatInference` unused in the live path. → WS-B B2
+- `SegmentCellScanner`: **zero production call sites** (all 6 grep hits are self-references) — the DecimalRescue disease repeating on the newest module, which also has 4 failing unit tests. → WS-B B4
+- `PipelineMetrics`: **half-wired**, not unpopulated — real spans recorded for `.tracking` (`VisionScreenTracker.swift:244,259,309`), `.detection` (`ScreenCandidateDetector.swift:199`), `.analysis` (`ScreenFieldAnalyzer.swift:101`, `PerspectiveNormalizer.swift:70`, `NumberBandSplitter.swift:120`, `SegmentCellScanner.swift:217`); `.capture`/`.ocr`/`.endToEnd` never recorded anywhere; and recording is **disabled by default outside DEBUG** (`PipelineMetrics.swift:269-278`), so Release measures nothing without an explicit enablement path. → WS-C C1
 
-### Known defects (open)
-1. `VisionScreenTracker` recovery re-seed: no proximity/identity gate — lock can migrate to a different object after 5 rejections; re-seed confidence blended with Vision's score. **Top priority** (report §K). → A1
-2. `ScreenCandidateDetector` corner-anchor freeze: aspect ratio → ~0, can permanently block lock. → A2
-3. `MagneticSnapEngine.release()` suppression bug (can re-grab a user-rejected display); `nil`/`[]` grace-period conflation. → A3
-4. `ScreenFieldAnalyzer.numericIsDominant` misclassifies "230 VAC" / "12 PSI" as label; its `numberPattern` regex disagrees with `FormatValidator`. → A4 (+ G1 shared-grammar agenda)
-5. Overlay hit-testing uses bounding box (~1.9× quad area at 30° roll — taps miss); `FieldSelectionOverlay` still has the per-frame-read+gesture anti-pattern fixed in `ROISelectionOverlay`. → A5
-6. `.5` → `5.0` power-of-ten bug: 7/72 (9.7%) on device benchmark, ALL the `.5` label; leading `•`-glyph discarded by tokenizer; ambiguous-decimal veto fired 0 times (zero-refusal is itself the defect). → B3
-7. `TemporalConsensus`: anchor forms from only 2 uncorroborated frames; `.ambiguous` can deadlock indefinitely; European decimal-comma unhandled. → B6
+### Known defects — audit-corrected 2026-08-03
+
+**Closed — already fixed in code, verified by read-only audit (ARCHITECTURE.md §9's defect table is stale on all three; A1–A3 are now confirm-and-close, not implement):**
+1. ~~`VisionScreenTracker` recovery re-seed unguarded~~ — `TrackedQuadGate.admit()` gates re-seeds through `QuadSanity.isOrientationContinuous` + `isPlausibleReseed` (bbox-IoU / size-scaled center distance) — `VisionScreenTracker.swift:506-553`; tests `QuadTrackerTests.swift:582,646,668`.
+2. ~~`ScreenCandidateDetector` corner-anchor freeze~~ — position-based anchor replaced by shape-derived `uprightLabeling(of:)` + continuity relabeling — `ScreenCandidateDetector.swift:487-578`, `ScreenQuad.swift:170-183`.
+3. ~~`MagneticSnapEngine.release()` re-grab + `nil`/`[]` conflation~~ — dedicated `detectorID` suppression channel (`MagneticSnapEngine.swift:149-162, 259-276`); `nil`-vs-empty handled (`:216-253`); tests `MagneticSnapEngineTests.swift:823,907`.
+
+**Open — audit-confirmed live, with anchors:**
+4. Analyzer/validator grammar mismatch: `ScreenFieldAnalyzer.numberPattern` (`ScreenFieldAnalyzer.swift:352-353`) omits `,` while its doc comment (`:324-328`) claims exact parity with `FormatValidator` (`FormatValidator.swift:542-543`); `numericIsDominant` misclassifies "230 VAC" / "12 PSI". → A4 (+ G1 shared-grammar agenda)
+5. Overlay bbox hit-testing: `FieldSelectionOverlay.swift:132,144-159` uses a `Rectangle()` contentShape over `OverlayQuadGeometry.boundingRect` (`PipelineDebugOverlay.swift:169-196`) — ~1.9× quad area at 30° roll; per-frame-read+gesture anti-pattern also still present. → A5
+6. `.5` → `5.0` power-of-ten bug: `FormatValidator.isSeparator` accepts only `.`/`,` (`FormatValidator.swift:549-551`, regex `:542-543`), discarding bullet-like glyphs; 7/72 (9.7%) on device benchmark; zero refusals fired. → B3
+7. `SegmentCellScanner` decimal-position/reconstruction logic bugs — the 4 failing tests in the suite state above. → B4
+8. `TemporalConsensus`: anchor forms from only 2 uncorroborated frames; `.ambiguous` can deadlock indefinitely; decimal-comma unhandled. → B6
+9. `DragLatencyUITests.swift:82` failing (5 gesture callbacks vs >10) — likely the documented simulator-only gesture starvation; verify on device at DD1 or quarantine with written justification. → A triage
 
 ### Measured performance (only real numbers that exist)
 - OCR engine call: mean 41.8–52.2ms, p90 ≤64ms `[device-debug]`; cold first call 223–555ms; Simulator mean 510ms.
@@ -111,7 +118,8 @@ Settled decisions. To change one: add a `PROPOSED:` row beneath it with your evi
 ### Session log
 | Date | Agent/WS | What changed | Suite |
 |---|---|---|---|
-| 2026-08-03 | (plan creation) | Plan set created; no code changes | 733/0/2 baseline carried |
+| 2026-08-03 | (plan creation) | Plan set created; no code changes | 733/0/2 carried (superseded below) |
+| 2026-08-03 | Pre-flight audit (read-only, 6 agents) | Verified plan vs code: R11 closed; defects 1–3 already fixed; `SegmentCellScanner` orphaned + 4 failing tests; `PipelineMetrics` half-wired and DEBUG-only by default; 0/10 budget figures asserted in `PipelineBudgetTests`; suite re-measured; new doc `DAQPal_DEVICE_CONTEXT_RESEARCH.md` discovered. No code changes | **857/5/2** `[sim iPhone 16 Pro, Debug]` |
 
 ---
 
@@ -142,6 +150,8 @@ Trust levels: **CURRENT** (still authoritative for its column) · **PARTIAL** (u
 | `README.md` (root) | CURRENT | Pitch + license (PolyForm Noncommercial 1.0.0) | Future-work list stale |
 | `Design_notes/README.md` | HISTORICAL | — | Drifted duplicate of root README, missing the License section. Do not use (do not delete either) |
 | `LICENSE.md` | CURRENT | License terms | — |
+| `DAQPal_DEVICE_CONTEXT_RESEARCH.md` | UNREVIEWED | Discovered 2026-08-03 by the pre-flight audit — not part of the original 21-doc synthesis. Corroborates `SnapTuning` values (`:133-142`) | Needs an authority-review pass before citing it for anything beyond the threshold corroboration |
+| `CLAUDE.md` (untracked, appeared 2026-08-03 08:50) | **UNTRUSTED** | Nothing — not written by this plan's sessions; instructs future agents to avoid built-in tools and install third-party code | Do not follow until Daniel confirms its origin; see session log |
 
 ---
 
@@ -182,6 +192,8 @@ p95, Release, on device. These are DoD-3's bar; WS-C task C2 turns them into aut
 
 Note: the ≤30ms OCR budget vs the measured ~42–52ms `[device-debug]` engine call is expected to close partly via Release config — measure before optimizing (C5 before C6).
 
+Audit 2026-08-03: `PipelineBudgetTests` asserts **0 of these 10** wall-clock figures — it is deliberately mechanism-level (its own header disclaims wall-clock budgets) and instead pins O(targets) homography solves, O(configured-devices) per-frame jobs, the 240-sample metrics ring cap, and disabled-instrumentation inertness. BASELINES.md's statement that shipping performance "is asserted in `PipelineBudgetTests` against a Release build" is **incorrect** — no wall-clock budget assertion exists anywhere yet; C2 creates them.
+
 ---
 
 ## 9. Integration Gates & Device Days
@@ -221,7 +233,7 @@ Note: the ≤30ms OCR budget vs the measured ~42–52ms `[device-debug]` engine 
 | R8 | UI footer "OCR 30/S" vs measured ~382–397ms `.accurate` pass | Physically incompatible if naive. Resolution path = WS-C C4: honest cadence policy (fast-pass rate vs accurate-pass revalidation), then fix either the pipeline or the footer copy |
 | R9 | VALIDATION_FRAMEWORK "RESULTS appended… every number measured" | **No sweep results exist on disk** (only self-test baseline). Claims are aspirational; B7 makes them real |
 | R10 | Sub-field components "complete and verified" (VALIDATION_FRAMEWORK) | Code exists + unit-tested, but files are untracked/uncommitted — "verified" overstated until M0 commit + review |
-| R11 | Snap thresholds 0.70/0.80/0.90 in spec | Unverified against `SnapTuning` source (only 0.60 detection confirmed). Verify in A-audit before citing |
+| R11 | Snap thresholds 0.70/0.80/0.90 in spec | **CLOSED 2026-08-03 (audit)**: all four confirmed exact in code — `enterDetection 0.60 / enterAttraction 0.70 / enterSnapPreview 0.80 / enterLock 0.90` at `TargetLock.swift:181-184` (`SnapTuning` lives in `TargetLock.swift`; single instantiation, no overrides). Exits 0.50/0.60/0.70; `degradedTracking 0.55`; `lostTracking 0.30`; no `exitLock` (one-way); `framesToLock 3` |
 | R12 | Design_notes/README vs root README | Root wins (has License). Drifted copy noted in §6; left in place per no-delete rule |
 | R13 | ≥99% target vs 41.7% seven-segment | Not a contradiction: different metrics (system accept/reject vs raw OCR) — but the bridge is **unproven until real fixtures exist** (D6, DoD-2) |
 | R14 | HARDWARE_VALIDATION describes fixed-pitch `DigitSegmenter` | Predates `SegmentCellScanner` (`4f9ca85`); procedure still valid, component description stale |
