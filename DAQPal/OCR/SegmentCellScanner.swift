@@ -26,6 +26,15 @@
 //  anyway. A `0` with no middle segment splits into two components but never
 //  into two column runs, which is precisely the failure being fixed.
 //
+//  THE MEASURED LIMIT OF THAT PROPERTY. It holds INSIDE one display line and
+//  only there. Across a whole multi-line crop every column carries ink from
+//  SOME line, so the scan degenerates: measured on the real instrument photo
+//  (`Fixtures/ir_gun_display.png`, 673x760) a whole-crop column scan yields ONE
+//  run spanning [0-672] x [0-759] and therefore zero digit runs, destroying the
+//  90.0 reading that the windowed scan reads correctly. The crop must be
+//  WINDOWED into candidate lines before the column scan means anything — which
+//  is what the horizontal projection below is for, and all it is for.
+//
 //  WHAT IT DOES NOT DO. It does not recognise digits — `SevenSegmentSampler`
 //  already does that, and the cells this produces are shaped to feed it. It does
 //  not decide anything: like `DecimalRescue` it reports what it saw and how well
@@ -85,6 +94,12 @@ struct SegmentCellScanner {
 
     /// One horizontal band of the display (the target IR thermometer shows two:
     /// the main reading and the smaller `MAX`).
+    ///
+    /// ROW IDENTITY COMES FROM RUN GEOMETRY, not from the ink projection. The
+    /// projection only proposes SEED WINDOWS; `mergedRows` decides which of them
+    /// are whole display lines and which are horizontal SLICES of one, by asking
+    /// whether the window's digit runs are wider than they are tall. See
+    /// `rowGateFraction` and `sliceAspectMax`.
     struct Row: Equatable, Sendable {
         /// The band's extent in buffer-normalized space.
         var band: NormalizedROI
@@ -117,6 +132,20 @@ struct SegmentCellScanner {
     /// Scaling off the median rather than the image width is what makes this
     /// survive a hand-placed window that includes bezel — see the measurement
     /// recorded in `NumberBandSplitter.profileGateFraction`.
+    ///
+    /// **THIS FINDS SEED WINDOWS, NOT ROWS.** The gate is content-dependent, so
+    /// an intra-glyph trough can be indistinguishable from a real inter-line
+    /// gap and ONE display line lands in TWO windows. That is EXPECTED, not a
+    /// misconfiguration: measured on clean DSEG7 renders (640x280 grid), "99.9"
+    /// gates at 57 and splits into 56..<148 plus 204..<224, and "100.0" gates at
+    /// 67 and splits into 56..<134 plus 146..<224. `mergedRows` repairs it from
+    /// run geometry, so no value of this constant has to separate those cases —
+    /// sweeping it was tried and does not.
+    ///
+    /// It must nevertheless stay CONSERVATIVE (over-split rather than under-),
+    /// because the windowing is what keeps the column scan meaningful at all:
+    /// without it, the real instrument photo produces a single column run
+    /// [0-672] x [0-759] and no digits whatsoever (see the file header).
     private static let rowGateFraction = 0.60
     /// Bands thinner than this fraction of the crop are glare lines or seams.
     private static let minBandHeightFraction = 0.06
@@ -131,6 +160,30 @@ struct SegmentCellScanner {
     /// the separator entirely and the position silently disappears.
     private static let columnNoiseFloorFraction = 0.012
     private static let columnNoiseFloorMinimum = 2
+
+    /// **Crop-edge exclusion zone**, as a fraction of the grid WIDTH.
+    ///
+    /// A run this close to the crop's left or right edge is a border artifact,
+    /// never a glyph. A flush-with-`x == 0` test is not enough, and that is
+    /// MEASURED: under `perspectiveTilt` with inverted polarity the keystone
+    /// edge of the transformed image binarizes as a FULL-HEIGHT ink column at
+    /// the left of the crop — runs [4-60] h=145 for "12.345" and [5-94] h=169
+    /// for "100.0", against digit runs of h=137..151 and h=157..172. They pass
+    /// the digit-height test, are counted as digits, and shift the reported
+    /// separator one place right: a WRONG position, the one failure mode this
+    /// component may never produce.
+    ///
+    /// The test runs on the RAW column runs, BEFORE `splitFusedSeparator`, and
+    /// that ordering is load-bearing: peeling first turns [4-60] into a rejected
+    /// mark [4-8] plus a "digit" [9-60] that is no longer near the edge, and the
+    /// margin then has to grow to 10px to catch it. Applied first, ~1% of the
+    /// grid width (6px on a 640-wide grid) suffices. Measured ladder on those
+    /// two cases, post-peel: 0,2,4,6,8px still wrong; 10,12,16,20px correct.
+    ///
+    /// A digit is never flush against the edge of a display crop; a bezel,
+    /// border or keystone artifact always is. `NumberBandSplitter` guards the
+    /// same failure with its structural-column test.
+    private static let cropEdgeMarginFraction = 0.01
 
     /// **Background margin added around each digit cell.**
     ///
@@ -155,14 +208,35 @@ struct SegmentCellScanner {
     /// ink, and is reported rather than forced into a category.
     private static let smallHeightFraction = 0.45
 
+    /// **A DIGIT IS NEVER WIDER THAN IT IS TALL.** A seed window whose median
+    /// digit run breaks that is not a line of digits — it is a horizontal SLICE
+    /// of one, cut out by a row gate that moved with the content. This is the
+    /// trigger for `mergedRows`, and the only constant that pass introduces.
+    ///
+    /// MEASURED, clean DSEG7 (median width / median height of the digit runs):
+    ///   whole lines      "12.345" 90/145=0.62   "80.8" 105/168=0.62
+    ///   slices           "99.9"   105/92=1.14 and 96/20=4.80
+    ///                    "100.0"  105/78=1.35 (both halves)
+    ///   sans "12.345"    69/35=1.97 and 80/74=1.08
+    ///   real IR gun      main 136/280=0.49, MAX line 76/155=0.49,
+    ///                    annunciator strip 83/50=1.66  ← a FALSE trigger,
+    ///                    which is why the merge must also PROVE itself before
+    ///                    it is accepted (see `mergedRows`).
+    private static let sliceAspectMax = 1.0
+
     /// Separator shape, relative to the band's digit height.
     private static let separatorMaxWidthFraction = 0.40
     /// **Minimum separator size**, as a fraction of the tallest run.
     ///
-    /// MEASURED, not assumed: without a floor, the `moderate` preset on DSEG7
-    /// "99.9" scored a one-pixel speck (h=0.04, w=0.01) as the separator and
-    /// reported position 0 instead of 2 — a WRONG position, the one failure mode
-    /// this component may never have. A decimal point is a substantial mark:
+    /// MEASURED, not assumed (**PRE-MERGE**: this anecdote was taken before
+    /// `mergedRows` existed, on a SLICED band, so its fractions were relative to
+    /// a slice height rather than a glyph height — the same speck now measures
+    /// h=0.12-0.25. Do not re-derive the constant from the current code path;
+    /// the floor is still what stops the failure it names): without a floor, the
+    /// `moderate` preset on DSEG7 "99.9" scored a one-pixel speck (h=0.04,
+    /// w=0.01) as the separator and reported position 0 instead of 2 — a WRONG
+    /// position, the one failure mode this component may never have. A decimal
+    /// point is a substantial mark:
     /// `DecimalRescue` measured a real period at 0.29 of the digit band. Anything
     /// an order of magnitude below that is sensor speckle or an antialiasing
     /// sliver, never a separator.
@@ -254,13 +328,71 @@ struct SegmentCellScanner {
             rowInk[y] = count
         }
 
-        let bands = runs(in: rowInk,
+        // SEED WINDOWS, not rows. The gate is content-dependent, so one display
+        // line can land in two windows (MEASURED: DSEG7 "99.9" → 56..<148 and
+        // 204..<224). Row identity is decided below, from run geometry.
+        let seeds = runs(in: rowInk,
                          gate: adaptiveGate(rowInk, fraction: rowGateFraction),
                          minLength: max(2, Int(Double(grid.height) * minBandHeightFraction)))
 
-        return bands.compactMap { band in
-            scanBand(band, ink: ink, grid: grid)
+        return mergedRows(seeds, ink: ink, grid: grid)
+            .compactMap { scanBand($0, ink: ink, grid: grid) }
+    }
+
+    /// Seed windows → display rows. A window whose digit runs are WIDER THAN
+    /// TALL cannot be a line of digits — it is a horizontal SLICE of one, cut
+    /// out by a row gate that moved with the content. Such a window is merged
+    /// with its neighbour, but ONLY when the merge proves itself.
+    ///
+    /// The proof is load-bearing and must not be simplified away. On the real
+    /// instrument the annunciator strip measures aspect 1.66 and TRIGGERS the
+    /// merge; accepting it collapses the main 90.0 reading from 3 digit runs to
+    /// 2 and loses its separator entirely. What refuses it is the glyph-count
+    /// guard: the merged band must find the same number of digit runs as the
+    /// TALLER of the two windows on its own, and must scan `.clean`.
+    private static func mergedRows(_ seeds: [Range<Int>], ink: [Bool], grid: InkGrid) -> [Range<Int>] {
+        var out: [Range<Int>] = []
+        var i = 0
+        while i < seeds.count {
+            var band = seeds[i]
+            var j = i
+            while let acc = glyphShape(band, ink: ink, grid: grid),
+                  acc.aspect > sliceAspectMax, j + 1 < seeds.count {
+                let next = seeds[j + 1]
+                let candidate = band.lowerBound..<next.upperBound
+                // The TALLER part carries the reliable glyph count: a short
+                // slice counts marks (a dot is "digit-height" in a 20px band).
+                let taller = band.count >= next.count ? band : next
+                guard let reference = glyphShape(taller, ink: ink, grid: grid),
+                      let merged = glyphShape(candidate, ink: ink, grid: grid),
+                      merged.aspect <= sliceAspectMax,
+                      merged.count == reference.count,
+                      let row = scanBand(candidate, ink: ink, grid: grid),
+                      row.integrity == .clean
+                else { break }
+                band = candidate
+                j += 1
+            }
+            out.append(band)
+            i = j + 1
         }
+        return out
+    }
+
+    /// The digit-run population of `band`: how many, and how wide they are
+    /// relative to how tall. `nil` when the band holds no digit-height run.
+    private static func glyphShape(_ band: Range<Int>, ink: [Bool], grid: InkGrid)
+        -> (count: Int, aspect: Double)? {
+        // Same edge rule, same digit test and the same ordering as `scanBand`,
+        // so the merge test and the real scan cannot disagree about what a
+        // digit run is.
+        let all = discardingCropEdges(columnRuns(in: band, ink: ink, grid: grid), grid: grid)
+        let tallest = all.reduce(0) { max($0, $1.height) }
+        guard tallest >= 4 else { return nil }
+        let digits = all.filter { Double($0.height) >= digitHeightFraction * Double(tallest) }
+        guard !digits.isEmpty else { return nil }
+        return (digits.count,
+                median(digits.map { Double($0.width) }) / max(1, median(digits.map { Double($0.height) })))
     }
 
     // MARK: - Column scan within one band
@@ -271,9 +403,51 @@ struct SegmentCellScanner {
         var x1: Int   // inclusive
         var y0: Int
         var y1: Int   // inclusive
+        /// True when `peel` cut this run out of a wider one, rather than the
+        /// column scan finding it. A native run is DIRECT evidence that
+        /// background separates the mark from the digit; a peel is an INFERENCE
+        /// from the shape of the ink. `scanBand`'s separator policy prefers the
+        /// direct evidence when both are present.
+        var peeled = false
         var width: Int { x1 - x0 + 1 }
         var height: Int { y1 - y0 + 1 }
         var aspect: Double { Double(width) / Double(max(1, height)) }
+    }
+
+    /// Maximal spans of inked columns within `band`, with each span's vertical
+    /// ink extent. THE CORE OF THIS FILE (see the comment in `scanBand`).
+    ///
+    /// Extracted so the merge test in `mergedRows` and the real scan can never
+    /// disagree about what a run is.
+    private static func columnRuns(in band: Range<Int>, ink: [Bool], grid: InkGrid) -> [Run] {
+        let noiseFloor = max(columnNoiseFloorMinimum,
+                             Int(Double(band.count) * columnNoiseFloorFraction))
+        var columnInk = [Int](repeating: 0, count: grid.width)
+        for y in band {
+            let base = y * grid.width
+            for x in 0..<grid.width where ink[base + x] { columnInk[x] += 1 }
+        }
+        var out: [Run] = []
+        var start: Int?
+        for x in 0...grid.width {
+            let inked = x < grid.width && columnInk[x] >= noiseFloor
+            if inked {
+                if start == nil { start = x }
+            } else if let s = start {
+                if let run = makeRun(x0: s, x1: x - 1, band: band, ink: ink, grid: grid) {
+                    out.append(run)
+                }
+                start = nil
+            }
+        }
+        return out
+    }
+
+    /// Drops runs sitting within `cropEdgeMarginFraction` of the crop's left or
+    /// right edge — see that constant for the measurement.
+    private static func discardingCropEdges(_ runs: [Run], grid: InkGrid) -> [Run] {
+        let margin = max(1, Int(Double(grid.width) * cropEdgeMarginFraction))
+        return runs.filter { $0.x0 >= margin && $0.x1 <= grid.width - 1 - margin }
     }
 
     private static func scanBand(_ band: Range<Int>,
@@ -290,27 +464,16 @@ struct SegmentCellScanner {
         // segment, the corner gaps DSEG7 draws between segments) are invisible
         // to this test, because the question asked of each column is "is there
         // ink ANYWHERE in it", not "is this pixel connected to that one".
-        let noiseFloor = max(columnNoiseFloorMinimum,
-                             Int(Double(bandHeight) * columnNoiseFloorFraction))
-        var columnInk = [Int](repeating: 0, count: grid.width)
-        for y in band {
-            let base = y * grid.width
-            for x in 0..<grid.width where ink[base + x] { columnInk[x] += 1 }
-        }
-
-        var runs: [Run] = []
-        var start: Int?
-        for x in 0...grid.width {
-            let inked = x < grid.width && columnInk[x] >= noiseFloor
-            if inked {
-                if start == nil { start = x }
-            } else if let s = start {
-                if let run = makeRun(x0: s, x1: x - 1, band: band, ink: ink, grid: grid) {
-                    runs.append(run)
-                }
-                start = nil
-            }
-        }
+        //
+        // This only means anything inside ONE display line — see the file
+        // header for the measurement that rules out running it whole-crop.
+        //
+        // Runs hugging the crop's left or right edge are discarded HERE, on the
+        // raw runs, before anything else looks at them — see
+        // `cropEdgeMarginFraction` for why the ordering matters. Doing it first
+        // also means `tallest` below is a glyph height rather than a bezel
+        // height, which is the denominator every shape constant is scaled to.
+        var runs = discardingCropEdges(columnRuns(in: band, ink: ink, grid: grid), grid: grid)
         guard !runs.isEmpty else { return nil }
 
         let tallest = runs.reduce(0) { max($0, $1.height) }
@@ -322,28 +485,23 @@ struct SegmentCellScanner {
         // --- Classify -------------------------------------------------------
         var digitRuns: [Run] = []
         var cells: [Cell] = []
-        var separatorIndex: Int?      // digit count to the LEFT of the separator
-        var separatorCount = 0
         // Runs that matched no category, with the measurements that rejected
         // them. Silently dropping these is how a lost separator becomes an
         // invisible failure, so they are always named in the rationale.
         var rejected: [String] = []
-        /// Accepted separator candidates, so a multi-candidate suppression can
-        /// be told apart from a no-candidate one in the log.
-        var accepted: [String] = []
+        /// Separator candidates, held back until the whole band is classified —
+        /// the peel policy below cannot be applied until it is known whether a
+        /// NATIVE separator run exists anywhere in the band. `insertion` is the
+        /// index in `cells` the separator belongs at, counted with the other
+        /// separators absent, so the survivors can be spliced back in order.
+        var separatorCandidates: [(insertion: Int, run: Run, digitsBefore: Int,
+                                   measured: String, region: NormalizedROI)] = []
 
-        // Baseline needs the digit runs, so classify in two passes.
-        //
-        // A run touching the crop's left or right EDGE is discarded rather than
-        // counted. On an inverted (light-on-dark) panel the frame border itself
-        // binarizes as ink and forms a full-height run — measured: the
-        // `moderate-inverted` preset yielded 6 digit runs for "12.345" and 5 for
-        // "100.0", which shifted the separator one place right and produced a
-        // WRONG position in both. A digit is never flush against the edge of a
-        // display crop; a bezel or border artifact always is. `NumberBandSplitter`
-        // guards the same failure with its structural-column test.
+        // Baseline needs the digit runs, so classify in two passes. Crop-edge
+        // runs are already gone (see `discardingCropEdges` above), and a peeled
+        // piece is always inside its parent's span, so no edge test is needed
+        // here — `cells` and `digitCount` see exactly the same run population.
         for run in runs where Double(run.height) >= digitHeightFraction * Double(tallest) {
-            guard run.x0 > 0, run.x1 < grid.width - 1 else { continue }
             digitRuns.append(run)
         }
         guard !digitRuns.isEmpty else {
@@ -356,9 +514,6 @@ struct SegmentCellScanner {
 
         for run in runs {
             if Double(run.height) >= digitHeightFraction * Double(tallest) {
-                // Same edge rule as the digit-run pass above, so `cells` and
-                // `digitCount` can never disagree about what a digit is.
-                guard run.x0 > 0, run.x1 < grid.width - 1 else { continue }
                 // Digit cells take the BAND's full height, not the run's own ink
                 // extent, so `SevenSegmentSampler`'s aspect test for `1` stays
                 // meaningful (a bare vertical stroke is narrow relative to the
@@ -418,14 +573,52 @@ struct SegmentCellScanner {
                 continue
             }
 
-            separatorCount += 1
             // POSITION FROM COLUMN ORDER, not from counting components — this is
             // the whole reason column scanning was adopted. Everything to the
             // left of the dot that is digit-height is a digit, whatever its
             // connectivity looks like.
-            if separatorIndex == nil { separatorIndex = digitsBefore }
-            accepted.append("separator@\(digitsBefore) (" + measured + ")")
-            cells.append(Cell(kind: .separator, region: region))
+            separatorCandidates.append((insertion: cells.count, run: run,
+                                        digitsBefore: digitsBefore,
+                                        measured: measured, region: region))
+        }
+
+        // --- Peel policy ----------------------------------------------------
+        //
+        // `splitFusedSeparator` is REQUIRED and stays: on `moderate-inverted`
+        // DSEG7 "12.345" the dot at x252-273 is bridged into run [157-273] and
+        // only a peel recovers it, and it is the sole candidate there.
+        //
+        // NOTHING MAY ACT ON `Run.peeled`. The flag survives only so the
+        // rationale string can say where a candidate came from.
+        //
+        // A provenance filter was tried here and REVERTED 2026-08-03. It
+        // discarded peeled candidates whenever a native one was also present,
+        // which recovered the proportional-face dot — and, measured over a
+        // 600-case both-version differential, converted 7 of HEAD's refusals
+        // into WRONG positions (bucket B: HEAD nil -> new non-nil-and-wrong;
+        // bucket D stayed empty). The reproducible one is sevenSegment/hard
+        // "000", a literal with NO decimal point: two candidates existed, the
+        // filter dropped the peeled one, `separatorCount` fell 2 -> 1, and the
+        // gate reported a phantom decimal on an integer reading.
+        //
+        // The defect is structural, not a tuning miss. Provenance is evidence
+        // about SEGMENTATION — whether a mark fused into a glyph — and whether
+        // the true dot fuses is a property of the optics. So when any other
+        // baseline-hugging mark survives natively (a comma, a colon lobe, a
+        // glare speck), nativeness systematically selects the impostor over the
+        // truth. Any future attempt must be gated on a both-version
+        // differential with bucket B empty on the ANY-ROW view, not first-row.
+        let separatorCount = separatorCandidates.count
+        let separatorIndex = separatorCandidates.first?.digitsBefore
+        /// Surviving separator candidates, so a multi-candidate suppression can
+        /// be told apart from a no-candidate one in the log.
+        let accepted = separatorCandidates.map {
+            "separator@\($0.digitsBefore) (" + $0.measured + ")"
+        }
+        // Spliced back highest-index-first so each recorded index is still
+        // valid; equal indices keep left-to-right order.
+        for candidate in separatorCandidates.reversed() {
+            cells.insert(Cell(kind: .separator, region: candidate.region), at: candidate.insertion)
         }
 
         // --- Integrity ------------------------------------------------------
@@ -496,7 +689,18 @@ struct SegmentCellScanner {
         // whole decimal-integrity effort exists to prevent; a missing one merely
         // costs recall and is resolved upstream by the format prior and
         // `TemporalConsensus`.
-        let position = (integrity == .clean && separatorCount == 1) ? separatorIndex : nil
+        //
+        // A position is ALSO refused when the pitch check could not run: with
+        // fewer than three digit runs there are fewer than two gaps, the
+        // `fragmented` test above is structurally disabled, and a LOST glyph
+        // cannot be detected. MEASURED: after row merging, DSEG7 "100.0" on the
+        // `hard` preset merges to 54..<216, finds only 2 digit runs and would
+        // otherwise report position 1 against a truth of 3 — a wrong position
+        // created by the merge itself. This clause is not optional; it ships
+        // with the merge. Its cost is that a genuine 2-digit reading ("5.5")
+        // can never report a position, which is a deliberate recall trade.
+        let position = (integrity == .clean && separatorCount == 1 && pitchGaps.count >= 2)
+            ? separatorIndex : nil
 
         return Row(band: bandROI,
                    cells: cells,
@@ -589,10 +793,11 @@ struct SegmentCellScanner {
         // Both halves must be real: a digit-height body and a dot-sized mark.
         let span = run.y0..<(run.y1 + 1)
         guard let digit = makeRun(x0: digitRange.0, x1: digitRange.1, band: span, ink: ink, grid: grid),
-              let mark = makeRun(x0: markRange.0, x1: markRange.1, band: span, ink: ink, grid: grid),
+              var mark = makeRun(x0: markRange.0, x1: markRange.1, band: span, ink: ink, grid: grid),
               Double(digit.height) >= digitHeightFraction * Double(tallest),
               Double(mark.height) <= smallHeightFraction * Double(tallest)
         else { return [run] }
+        mark.peeled = true
 
         return fromRight ? [digit, mark] : [mark, digit]
     }

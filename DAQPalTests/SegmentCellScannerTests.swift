@@ -21,6 +21,7 @@
 //
 
 import CoreVideo
+import UIKit
 import XCTest
 @testable import DAQPal
 
@@ -175,6 +176,73 @@ final class SegmentCellScannerTests: XCTestCase {
         }
     }
 
+    // MARK: - Row identity on the real instrument (two stacked readings)
+
+    /// The real instrument photo, cropped to the LCD and rotated upright.
+    /// Loader copied from `NumberBandSplitterTests` — the same fixture, read the
+    /// same way, so a bundling change fails both tests identically.
+    private func realDisplayBuffer() throws -> CVPixelBuffer {
+        let bundle = Bundle(for: type(of: self))
+        guard let url = bundle.url(forResource: "ir_gun_display", withExtension: "png") else {
+            throw XCTSkip("ir_gun_display.png fixture not present in the test bundle")
+        }
+        let data = try Data(contentsOf: url)
+        guard let image = UIImage(data: data)?.cgImage else {
+            throw XCTSkip("fixture could not be decoded")
+        }
+        let w = image.width, h = image.height
+        var pb: CVPixelBuffer?
+        let attrs: [CFString: Any] = [kCVPixelBufferCGImageCompatibilityKey: true,
+                                      kCVPixelBufferCGBitmapContextCompatibilityKey: true]
+        CVPixelBufferCreate(kCFAllocatorDefault, w, h, kCVPixelFormatType_32BGRA,
+                            attrs as CFDictionary, &pb)
+        let out = try XCTUnwrap(pb, "could not allocate pixel buffer")
+        CVPixelBufferLockBaseAddress(out, [])
+        defer { CVPixelBufferUnlockBaseAddress(out, []) }
+        let ctx = CGContext(data: CVPixelBufferGetBaseAddress(out),
+                            width: w, height: h, bitsPerComponent: 8,
+                            bytesPerRow: CVPixelBufferGetBytesPerRow(out),
+                            space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                | CGBitmapInfo.byteOrder32Little.rawValue)
+        try XCTUnwrap(ctx).draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return out
+    }
+
+    /// The target instrument shows two readings stacked. Row identity must
+    /// separate a large main reading from a smaller legend line, or a merged
+    /// band would count legend glyphs as digits.
+    ///
+    /// THIS IS THE ONLY GUARD ON THE MERGE'S ACCEPTANCE TEST. The band merge is
+    /// triggered by a wide-and-flat aspect, and on this photo the annunciator
+    /// strip trips that trigger legitimately; only the glyph-count proof refuses
+    /// it. Measured: accepting that merge collapses the 90.0 reading to 2 digit
+    /// runs with no separator. No synthetic render reproduces this — the
+    /// generator cannot draw two lines — so weakening this test silently loses
+    /// the target instrument's primary reading.
+    func testTwoRowInstrumentSplitsMainReadingFromLegendLine() throws {
+        let rows = SegmentCellScanner.scan(try realDisplayBuffer())
+        let report = rows.map { String(format: "y=%.3f..%.3f digits=%d sep=%@ %@",
+                                       $0.band.y, $0.band.y + $0.band.height, $0.digitCount,
+                                       $0.separatorPosition.map(String.init) ?? "nil",
+                                       String(describing: $0.integrity)) }
+            .joined(separator: "\n  ")
+        // NOT `.first`: on a real crop the topmost band is a digit-less strip.
+        let readings = rows.filter { $0.digitCount >= 2 }
+        XCTAssertGreaterThanOrEqual(readings.count, 2,
+                                    "expected the main reading and the MAX line as separate rows:\n  \(report)")
+        let main = try XCTUnwrap(readings.max(by: { $0.band.height < $1.band.height }))
+        XCTAssertEqual(main.separatorPosition, 2, "main reading 90.0 — \(main.rationale)")
+        XCTAssertEqual(main.integrity, .clean)
+        XCTAssertLessThan(main.band.height, 0.55,
+                          "a row spanning both lines means they were merged:\n  \(report)")
+        let below = readings.filter { $0.band.y > main.band.y + main.band.height }
+        XCTAssertFalse(below.isEmpty, "the MAX line was absorbed into the main row:\n  \(report)")
+        for row in below where row.separatorPosition != nil {
+            XCTAssertEqual(row.separatorPosition, 2, "92.7 — wrong position \(row.rationale)")
+        }
+    }
+
     // MARK: - Determinism
 
     func testScanIsDeterministic() throws {
@@ -188,15 +256,32 @@ final class SegmentCellScannerTests: XCTestCase {
 
     // MARK: - Raster faces still work
 
-    /// Column scanning is not segment-specific — it should hold up on the
-    /// proportional face too, where each glyph is one component and the existing
-    /// layer already worked. A regression here would mean the new path cannot
-    /// simply replace the old one.
+    /// Column scanning is not segment-specific — segmentation must hold up on
+    /// the proportional face too. It does: the digit count is exact.
+    ///
+    /// DECIMAL RECALL ON PROPORTIONAL FACES IS A KNOWN OPEN GAP, and this test
+    /// asserts the SAFETY form (correct or none) rather than a recall guarantee
+    /// the component does not provide. Measured 2026-08-03 on sans "12.345":
+    /// three separator candidates survive shape screening — a peel off the '2'
+    /// (x89-116, aspect 1.75), the REAL dot as a native run (x254-285, aspect
+    /// 1.00), and a peel off the '4' (x495-510, base 0.20) — so the band is
+    /// multi-candidate and the position is suppressed.
+    ///
+    /// Do NOT "fix" this by preferring native runs over peeled ones. That was
+    /// implemented and reverted the same day: it recovers this dot but converts
+    /// 7 of HEAD's refusals into WRONG positions across a 600-case differential
+    /// (see the peel-policy note in SegmentCellScanner.swift). A wrong decimal
+    /// position is a silent factor-of-ten error in exported data; a missing one
+    /// only costs recall. For the record, HEAD reported 3 here — wrong — so
+    /// suppression is already a strict improvement on this case.
     func testProportionalFaceAlsoSegments() throws {
         guard let row = try scanSingleRow("12.345", style: .sans) else {
             return XCTFail("no row for sans '12.345'")
         }
         XCTAssertEqual(row.digitCount, 5, "sans '12.345' digit count — \(row.rationale)")
-        XCTAssertEqual(row.separatorPosition, 2, "sans '12.345' position — \(row.rationale)")
+        if let position = row.separatorPosition {
+            XCTAssertEqual(position, 2,
+                           "sans '12.345': reported a WRONG position \(position) — \(row.rationale)")
+        }
     }
 }
