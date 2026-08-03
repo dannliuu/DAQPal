@@ -55,6 +55,8 @@ final class CaptureStack: VideoRecordingCoordinating {
     /// The intelligent screen-locking stage, created once and shared by every
     /// capture mode (live, synthetic). Idle until `AppState.screenLockEnabled`.
     let lockPipeline = ScreenLockPipeline()
+    /// Services sub-field analysis of manually placed windows on demand.
+    let windowAnalyzer = WindowFieldAnalyzer()
 
     private let appState: AppState
     private let permissionManager = CameraPermissionManager()
@@ -71,6 +73,7 @@ final class CaptureStack: VideoRecordingCoordinating {
         appState.processor = processor
         appState.videoRecordingCoordinator = self
         appState.lockPipeline = lockPipeline
+        appState.windowAnalyzer = windowAnalyzer
     }
 
     /// Permission → configure → run on device; synthetic pipeline in the
@@ -179,7 +182,8 @@ final class CaptureStack: VideoRecordingCoordinating {
         let frameProcessor = FrameProcessor(source: cameraManager.frameSource,
                                             processor: processor,
                                             appState: appState,
-                                            lockPipeline: lockPipeline)
+                                            lockPipeline: lockPipeline,
+                                            windowAnalyzer: windowAnalyzer)
         self.frameProcessor = frameProcessor
         // Subscribe before starting the session so no early frame is missed.
         frameProcessor.start()
@@ -192,6 +196,21 @@ final class CaptureStack: VideoRecordingCoordinating {
     private func startSimulated() {
         appState.videoDimensions = CGSize(width: 1080, height: 1920)
         appState.captureFrameRate = 12
+
+#if DEBUG
+        // CONTROL CONDITION for gesture-latency measurement: mount the capture
+        // UI (so the ROI overlay and its drag gesture exist) but never start
+        // the frame pump. A drag measured here carries XCUITest's own synthetic
+        // event rate and nothing else, which is the floor the capture-running
+        // measurement has to be compared against. Without this the two
+        // explanations for a low tick count — a starved app, or an instrument
+        // that only emitted a few events — are indistinguishable.
+        if ProcessInfo.processInfo.arguments.contains("-daqpal-idle-capture") {
+            hasPreviewFrame = true
+            status = .simulated
+            return
+        }
+#endif
 
         let synthetic = SyntheticFrameSource(fps: 12, motion: demoMotion)
         syntheticSource = synthetic
@@ -212,7 +231,8 @@ final class CaptureStack: VideoRecordingCoordinating {
         let frameProcessor = FrameProcessor(source: previewTapped,
                                             processor: processor,
                                             appState: appState,
-                                            lockPipeline: lockPipeline)
+                                            lockPipeline: lockPipeline,
+                                            windowAnalyzer: windowAnalyzer)
         self.frameProcessor = frameProcessor
         frameProcessor.start()
         status = .simulated
@@ -267,7 +287,10 @@ private final class SimulatorPreviewFrameSource: FrameSource {
     func frames() -> AsyncStream<TimestampedFrame> {
         let base = self.base
         let onFrame = self.onFrame
-        return AsyncStream { continuation in
+        // Newest-frame-wins: without an explicit policy AsyncStream buffers
+        // unboundedly, so a slow downstream consumer would accumulate stale
+        // frames instead of skipping to the latest.
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             let task = Task {
                 for await frame in base.frames() {
                     await onFrame(frame)

@@ -66,13 +66,26 @@ final class AppState {
     }
     private(set) var liveReadings: [UUID: LiveReading] = [:]
     private(set) var debugText: String?
+    /// Last completed drag's callback-interval distribution, surfaced so a UI
+    /// test (and a developer) can read what the gesture actually experienced
+    /// rather than infer it. DEBUG-only measurement; written once per gesture.
+    var gestureLatencySummary: String?
     /// Raw-OCR debug overlay toggle (Milestone 2 validation aid).
     var showDebugOverlay = false
     /// ROI auto-tracking on accepted readings (see tracking constants above).
     var roiTrackingEnabled = true
     /// True while the user is actively dragging/resizing an ROI window —
     /// auto-tracking pauses so it never fights the gesture.
-    var isEditingROI = false
+    ///
+    /// Mirrored into `InteractionState.shared` so the capture drain can read it
+    /// without a main-actor hop. Reading this property from the frame loop
+    /// would queue work behind the very gesture it is trying to yield to.
+    var isEditingROI = false {
+        didSet {
+            guard isEditingROI != oldValue else { return }
+            InteractionState.shared.isUserInteracting = isEditingROI
+        }
+    }
 
     // MARK: Intelligent screen locking (spec Gate 14)
 
@@ -87,6 +100,13 @@ final class AppState {
     private(set) var snapState: SnapState = .manual
     private(set) var lockedTarget: TrackedTarget?
     private(set) var screenCandidates: [ScreenCandidate] = []
+    /// `ScreenLockUpdate.measurementsValid`, published: true only while the
+    /// tracked geometry is BOTH healthy and independently verified. Gates the
+    /// per-device "LOCKED" chip for field-backed devices (see `apply(_:)`), so
+    /// the card drops its lock the moment geometry is invalidated instead of
+    /// coasting on the OCR-recency timeout. Always false in manual mode —
+    /// manual devices never consult it.
+    private(set) var trackingMeasurementsValid = false
     /// Fields found on the locked display, plus the user's selections.
     private(set) var fieldCatalog: ScreenFieldCatalog?
     /// Set once by the capture stack at startup.
@@ -129,12 +149,31 @@ final class AppState {
             if snapState != .manual { snapState = .manual }
             if lockedTarget != nil { lockedTarget = nil }
             if !screenCandidates.isEmpty { screenCandidates = [] }
+            if trackingMeasurementsValid { trackingMeasurementsValid = false }
             return
         }
 
         if snapState != update.snapState { snapState = update.snapState }
         if lockedTarget != update.target { lockedTarget = update.target }
         if screenCandidates != update.candidates { screenCandidates = update.candidates }
+        if trackingMeasurementsValid != update.measurementsValid {
+            trackingMeasurementsValid = update.measurementsValid
+            // Geometry was just invalidated: drop the field-backed cards' lock
+            // NOW rather than waiting for the next `apply(_:)` — the chip must
+            // never show LOCKED over geometry the tracker cannot vouch for.
+            // Same unlocked-state normalization as `apply(_:)` (the UI reads
+            // only `locked` while unlocked; normalizing the rest keeps the
+            // change-gated publish from churning). Manual devices are untouched.
+            if !update.measurementsValid {
+                for id in fieldBackedDeviceIDs {
+                    guard var reading = liveReadings[id], reading.locked else { continue }
+                    reading.locked = false
+                    reading.value = nil
+                    reading.confidence = 0
+                    liveReadings[id] = reading
+                }
+            }
+        }
 
         if let analyzed = update.analyzedFields, let target = update.target {
             var catalog = fieldCatalog?.targetID == target.id
@@ -348,8 +387,47 @@ final class AppState {
                     reading.accepted = m.accepted
                 }
                 let lastAccepted = lastAcceptedAt[device.id]
-                reading.locked = lastAccepted.map { result.timestamp - $0 <= Self.lockTimeout } ?? false
-                if !reading.locked { reading.value = nil }
+                let recentlyAccepted = lastAccepted.map { result.timestamp - $0 <= Self.lockTimeout } ?? false
+                // A field-backed device's lock requires tracking validity AND
+                // OCR recency — recency alone let the chip stay green for up to
+                // `lockTimeout` after the geometry it was reading from had
+                // already been invalidated. Manual-ROI devices keep the
+                // recency-only rule (manual fallback stays ungated by design).
+                reading.locked = fieldBacked.contains(device.id)
+                    ? (recentlyAccepted && trackingMeasurementsValid)
+                    : recentlyAccepted
+                if !reading.locked {
+                    // STATE NORMALIZATION (measured regression, Gate 2A).
+                    //
+                    // While a device is unlocked (the SEARCHING label), the UI
+                    // reads exactly one field of this struct: `locked`.
+                    //   • `DeviceReadingCard.confidence` returns 0 unless
+                    //     `isLocked`, and `valueText` returns the placeholder.
+                    //   • `ROIWindowLabel` takes its SEARCHING branch, which
+                    //     shows no percentage, and `ROIWindowBorder` reads only
+                    //     the lock flag.
+                    //   • `AlignmentHintView` reads only `locked`.
+                    // A rejected reading nonetheless carried the pipeline's
+                    // fused confidence, which moves every frame. That defeated
+                    // the `reading != previous` gate below and republished
+                    // `liveReadings` at capture rate — invalidating every view
+                    // that reads it while displaying none of it. Measured
+                    // before this change: 60/60 frames invalidated with a
+                    // varying confidence, 1/60 with a constant one.
+                    //
+                    // Deliberately NOT normalized here:
+                    //   • `unit` — not a churn source (it is `m.unit ??
+                    //     device.unit`, which is stable across frames), and
+                    //     zeroing published state nothing proved unused is a
+                    //     wider change than this defect warrants.
+                    //   • `accepted` — an accepted measurement sets
+                    //     `lastAcceptedAt` to its own timestamp, so within the
+                    //     frame loop `accepted == true` implies `locked ==
+                    //     true`. It is therefore already false throughout the
+                    //     unlocked state and cannot churn.
+                    reading.value = nil
+                    reading.confidence = 0
+                }
             }
             if reading != previous {
                 liveReadings[device.id] = reading
@@ -396,7 +474,12 @@ final class AppState {
 
     func stopRecording() {
         guard let session = activeRecording else { return }
-        completedSession = session.finish(devices: devices)
+        // A window with sub-fields carved out of it is excluded from
+        // recognition, so exporting it would put a permanently blank column in
+        // the CSV and an empty series on the results screen. It still exists as
+        // a device because it is the draggable frame its children live in.
+        completedSession = session.finish(
+            devices: devices.filter { !parentWindowIDs.contains($0.id) })
         activeRecording = nil
         uiMode = .reviewingResults
         showResults = true
@@ -434,14 +517,190 @@ final class AppState {
         guard devices.count > 1 else { return }
         // Samples for a removed device would vanish from the session — removal waits until STOP.
         guard !isRecording else { return }
-        devices.removeAll { $0.id == id }
-        liveReadings[id] = nil
-        lastAcceptedAt[id] = nil
+        // Sub-fields carved out of this window lose their frame of reference:
+        // their region is a fraction of a window that no longer exists, so
+        // leaving them would strand devices whose ROI can never be recomputed
+        // and which would keep reporting from wherever the window last was.
+        let orphans = devices.filter { $0.origin?.parentID == id }.map(\.id)
+        devices.removeAll { $0.id == id || orphans.contains($0.id) }
+        for gone in [id] + orphans {
+            liveReadings[gone] = nil
+            lastAcceptedAt[gone] = nil
+        }
+        windowCandidates[id] = nil
     }
 
     func updateDevice(_ device: Device) {
         guard let idx = devices.firstIndex(where: { $0.id == device.id }) else { return }
-        devices[idx] = device
+        var updated = devices
+        updated[idx] = device
+        _ = Self.recomposeSubFields(in: &updated)
+        devices = updated
+    }
+
+    // MARK: Window sub-fields (manual path)
+
+    /// Candidate numbers found inside each placed window, keyed by that
+    /// window's device. Replaced wholesale by each analysis pass; not persisted.
+    private(set) var windowCandidates: [UUID: [WindowCandidate]] = [:]
+
+    /// Set once by the capture stack at startup, alongside `lockPipeline`.
+    @ObservationIgnored weak var windowAnalyzer: WindowFieldAnalyzer?
+
+    /// Windows that currently have at least one sub-field carved out of them.
+    /// Such a window is a FRAME, not a reading: recognising it whole is exactly
+    /// the merged-numbers failure sub-fields exist to fix, so it is excluded
+    /// from the processor config.
+    var parentWindowIDs: Set<UUID> {
+        Set(devices.compactMap { $0.origin?.parentID })
+    }
+
+    /// Candidates worth showing for `deviceID`. Empty unless analysis found a
+    /// genuine choice — one candidate means the window already frames one
+    /// number, and a lone box duplicating the window is noise.
+    func subFieldCandidates(for deviceID: UUID) -> [WindowCandidate] {
+        guard let found = windowCandidates[deviceID], found.count >= 2 else { return [] }
+        return found
+    }
+
+    func isSubFieldSelected(_ candidateID: UUID) -> Bool {
+        devices.contains { $0.id == candidateID }
+    }
+
+    /// Asks for the window to be re-analysed on the next frame. Called when the
+    /// user finishes placing or moving a window — the content inside it has
+    /// changed, so the previous candidates no longer describe it.
+    func requestWindowAnalysis(for deviceID: UUID) {
+        guard let analyzer = windowAnalyzer,
+              let device = devices.first(where: { $0.id == deviceID }),
+              !device.isSubField,
+              let roi = device.roi else { return }
+        Task { await analyzer.request(deviceID: deviceID, roi: roi) }
+    }
+
+    /// Publishes one round of analysis results.
+    ///
+    /// Selections SURVIVE re-analysis. A new pass mints new candidate ids, so
+    /// matching by id would silently deselect everything the user had chosen
+    /// every time they nudged the window. Sub-field devices are matched
+    /// geometrically instead and their stored region is updated in place, which
+    /// also lets a selection follow content that shifted inside the window.
+    func applyWindowAnalyses(_ analyses: [WindowAnalysis]) {
+        guard !analyses.isEmpty else { return }
+        var updatedDevices = devices
+        var devicesChanged = false
+
+        for analysis in analyses {
+            var candidates = analysis.candidates
+            // Each candidate can claim at most one existing selection. Without
+            // this, a pass that returns fewer candidates than there are
+            // selections would bind several of them to the same number, and the
+            // user would silently get two identical columns under different
+            // names. An unclaimed selection keeps its previous region instead.
+            var claimed: Set<Int> = []
+            for index in updatedDevices.indices {
+                guard let origin = updatedDevices[index].origin,
+                      origin.parentID == analysis.parentID,
+                      let match = Self.closestCandidateIndex(to: origin.region,
+                                                             in: candidates,
+                                                             excluding: claimed)
+                else { continue }
+                claimed.insert(match)
+                // The candidate ADOPTS the device's id. The box on screen and
+                // the device it created must stay one thing; letting the box
+                // take the new id makes it read as unselected and turns the
+                // next tap into "add another device" rather than "remove this
+                // one" — observed end to end before this line existed.
+                candidates[match].id = updatedDevices[index].id
+                if updatedDevices[index].origin?.region != candidates[match].region {
+                    updatedDevices[index].origin?.region = candidates[match].region
+                    devicesChanged = true
+                }
+            }
+            if windowCandidates[analysis.parentID] != candidates {
+                windowCandidates[analysis.parentID] = candidates
+            }
+        }
+
+        if Self.recomposeSubFields(in: &updatedDevices) { devicesChanged = true }
+        if devicesChanged { devices = updatedDevices }
+    }
+
+    /// Selects or deselects one candidate. A selection becomes a full device,
+    /// so recording, CSV export and the results screen pick it up as its own
+    /// column with no further changes anywhere.
+    func toggleSubField(parentID: UUID, candidateID: UUID) {
+        // Same data-loss guard as `removeDevice`: dropping a sub-field
+        // mid-recording would erase its already-captured samples.
+        guard !isRecording else { return }
+
+        if devices.contains(where: { $0.id == candidateID }) {
+            devices.removeAll { $0.id == candidateID }
+            liveReadings[candidateID] = nil
+            lastAcceptedAt[candidateID] = nil
+            return
+        }
+
+        guard devices.count < Self.maxDevices,
+              let parent = devices.first(where: { $0.id == parentID }),
+              let parentROI = parent.roi,
+              let candidate = windowCandidates[parentID]?.first(where: { $0.id == candidateID })
+        else { return }
+
+        let origin = SubFieldOrigin(parentID: parentID, region: candidate.region)
+        devices.append(Device(id: candidate.id,
+                              name: "\(parent.name) \(candidate.suggestedName)",
+                              model: parent.model,
+                              displayFormat: parent.displayFormat,
+                              roi: origin.compose(parent: parentROI),
+                              origin: origin))
+        // The parent stops being recognised the moment it has a child, so its
+        // card must not keep showing the last whole-window value as if live.
+        liveReadings[parentID] = nil
+        lastAcceptedAt[parentID] = nil
+    }
+
+    /// The candidate whose region is nearest `region` by centre distance, used
+    /// to carry a selection across re-analysis. Rejects matches further than
+    /// half the window away — that is a different number, not the same one that
+    /// moved, and silently rebinding a selection to the wrong reading would
+    /// corrupt the record without any visible sign.
+    private static func closestCandidateIndex(to region: NormalizedROI,
+                                              in candidates: [WindowCandidate],
+                                              excluding claimed: Set<Int>) -> Int? {
+        let cx = region.x + region.width / 2
+        let cy = region.y + region.height / 2
+        var best: (index: Int, distance: CGFloat)?
+        for (index, candidate) in candidates.enumerated() where !claimed.contains(index) {
+            let dx = (candidate.region.x + candidate.region.width / 2) - cx
+            let dy = (candidate.region.y + candidate.region.height / 2) - cy
+            let distance = (dx * dx + dy * dy).squareRoot()
+            if best == nil || distance < best!.distance { best = (index, distance) }
+        }
+        guard let found = best, found.distance <= 0.5 else { return nil }
+        return found.index
+    }
+
+    /// Rewrites every sub-field's absolute ROI from its parent-relative origin.
+    /// Runs wherever a parent window can move; returns whether anything changed
+    /// so callers can keep their single `devices` assignment.
+    @discardableResult
+    private static func recomposeSubFields(in devices: inout [Device]) -> Bool {
+        let parents = devices.reduce(into: [UUID: NormalizedROI]()) { map, device in
+            guard !device.isSubField, let roi = device.roi else { return }
+            map[device.id] = roi
+        }
+        var changed = false
+        for index in devices.indices {
+            guard let origin = devices[index].origin,
+                  let parent = parents[origin.parentID] else { continue }
+            let composed = origin.compose(parent: parent)
+            if devices[index].roi != composed {
+                devices[index].roi = composed
+                changed = true
+            }
+        }
+        return changed
     }
 
     // MARK: Private
@@ -454,6 +713,10 @@ final class AppState {
         var changed = false
         for index in updated.indices {
             let device = updated[index]
+            // A sub-field's geometry is DERIVED from its parent's window.
+            // Nudging it independently would be overwritten by the next
+            // recomposition below, so it would fight rather than track.
+            guard !device.isSubField else { continue }
             guard let roi = device.roi,
                   result.readings[device.id]?.accepted == true,
                   let observed = result.observedROIs[device.id] else { continue }
@@ -470,6 +733,8 @@ final class AppState {
             updated[index].roi = moved.clamped()
             changed = true
         }
+        // Children ride along with whatever the parents just did.
+        if Self.recomposeSubFields(in: &updated) { changed = true }
         if changed { devices = updated }
     }
 
@@ -482,7 +747,12 @@ final class AppState {
     private func syncProcessorConfig() {
         guard let processor else { return }
         let fieldBacked = fieldBackedDeviceIDs
+        let parents = parentWindowIDs
         let configs = devices.compactMap { device -> DeviceRecognitionConfig? in
+            // A window with sub-fields carved out of it is a frame, not a
+            // reading. Recognising it whole is precisely the merged-numbers
+            // failure the sub-fields were selected to avoid.
+            if parents.contains(device.id) { return nil }
             if let roi = device.roi {
                 return DeviceRecognitionConfig(id: device.id, roi: roi, format: device.displayFormat)
             }

@@ -21,6 +21,10 @@ final class FrameProcessor {
     /// measured from. Idle (and effectively free) until enabled, which is what
     /// keeps the manual workflow the untouched default.
     private let lockPipeline: ScreenLockPipeline
+    /// Services on-demand sub-field analysis of manually placed windows. Costs
+    /// nothing per frame while no request is outstanding (`analyze` is a
+    /// dictionary-empty check), which is the overwhelmingly common case.
+    private let windowAnalyzer: WindowFieldAnalyzer
     /// Held weakly so a running `FrameProcessor` never keeps `AppState` alive
     /// past its owner; results simply stop being applied once it is gone.
     private weak var appState: AppState?
@@ -29,11 +33,13 @@ final class FrameProcessor {
     init(source: any FrameSource,
          processor: MeasurementProcessor,
          appState: AppState,
-         lockPipeline: ScreenLockPipeline) {
+         lockPipeline: ScreenLockPipeline,
+         windowAnalyzer: WindowFieldAnalyzer) {
         self.source = source
         self.processor = processor
         self.appState = appState
         self.lockPipeline = lockPipeline
+        self.windowAnalyzer = windowAnalyzer
     }
 
     func start() {
@@ -41,6 +47,7 @@ final class FrameProcessor {
         let source = self.source
         let processor = self.processor
         let lockPipeline = self.lockPipeline
+        let windowAnalyzer = self.windowAnalyzer
         // Captured weakly (not via `self`) so the consuming Task never keeps
         // either this object or `AppState` alive beyond `stop()`.
         weak let appState = self.appState
@@ -48,22 +55,64 @@ final class FrameProcessor {
             for await frame in source.frames() {
                 if Task.isCancelled { break }
 
-                // Read the acquisition inputs the pipeline needs from the UI
-                // side. One hop, before the expensive work, so the geometry the
-                // pipeline reasons about matches what the user currently sees.
-                let inputs = await MainActor.run { appState?.screenLockInputs() }
+                // STAND DOWN WHILE THE USER IS DRAGGING (Gate 2A, measured).
+                //
+                // This is a correctness fix before it is a performance one: the
+                // ROI is in motion under the finger, so anything recognised
+                // from it is read from a region the user is still choosing. The
+                // result is meaningless and would be rejected anyway.
+                //
+                // It is also where the "sluggish" half of the reported defect
+                // comes from. While SEARCHING nothing is ever accepted, so the
+                // pipeline never short-circuits and `DualPassVisionOCR` runs its
+                // `.accurate` pass — documented at ~382 ms — on every single
+                // frame, continuously, for the whole gesture. Skipping the
+                // expensive stages frees both the drain and the two main-actor
+                // hops below, which otherwise queue against touch handling.
+                //
+                // Read lock-free: asking the MAIN ACTOR whether the main actor
+                // is busy would defeat the purpose.
+                if InteractionState.shared.isUserInteracting {
+                    PipelineMetrics.shared.recordDroppedFrame()
+                    continue
+                }
+
+                // Only pay the main-actor hop for acquisition inputs when the
+                // intelligent path is actually enabled. It is OFF by default,
+                // so this hop was pure per-frame waste in the shipping
+                // configuration.
+                var inputs: AppState.ScreenLockInputs?
+                if await lockPipeline.enabled {
+                    inputs = await MainActor.run { appState?.screenLockInputs() }
+                }
                 let lock = await lockPipeline.process(frame: frame,
                                                       selection: inputs?.selection,
-                                                      isUserDragging: inputs?.isUserDragging ?? false)
+                                                      isUserDragging: false)
                 if Task.isCancelled { break }
 
+                // `measurementsValid` is what makes tracking-invalidity
+                // observable downstream: with it false, every field-backed
+                // device yields a REJECTED `.trackingInvalid` measurement
+                // instead of silently vanishing from the record. Idle (manual
+                // mode) passes `true` — there are no field-backed devices to
+                // gate, and manual ROIs are ungated by design.
                 let result = await processor.process(frame: frame,
                                                      roiOverrides: lock.fieldROIs,
-                                                     requiringOverride: inputs?.fieldBackedDeviceIDs ?? [])
+                                                     requiringOverride: inputs?.fieldBackedDeviceIDs ?? [],
+                                                     trackingValid: lock.isIdle || lock.measurementsValid)
                 if Task.isCancelled { break }
+
+                // Sub-field analysis of manually placed windows. Serviced here
+                // so it reuses the frame already in hand rather than capturing
+                // one of its own, and AFTER recognition so a pending request
+                // can never delay the reading for the current frame.
+                let windows = await windowAnalyzer.analyze(frame: frame.pixelBuffer)
+                if Task.isCancelled { break }
+
                 await MainActor.run {
                     appState?.applyScreenLock(lock)
                     appState?.apply(result)
+                    appState?.applyWindowAnalyses(windows)
                 }
             }
         }

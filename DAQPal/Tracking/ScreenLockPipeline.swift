@@ -38,6 +38,7 @@
 
 import CoreVideo
 import Foundation
+import os
 
 /// One frame's output from the intelligent pipeline.
 struct ScreenLockUpdate: Sendable {
@@ -55,10 +56,23 @@ struct ScreenLockUpdate: Sendable {
     /// Frame-space ROI for each SELECTED field, derived from the live target
     /// geometry. Empty whenever nothing is locked — the manual path.
     var fieldROIs: [UUID: NormalizedROI] = [:]
+    /// True only while the lock is BOTH healthy and independently verified
+    /// (remediation plan Phase 14: `TrackingHealthy = false ⇒ MeasurementValid
+    /// = false`, even at 99% OCR confidence). When false, `fieldROIs` is empty
+    /// by construction, so no field-backed reading can be produced from
+    /// geometry the detector has not corroborated.
+    var measurementsValid = false
     /// Fields produced by an analysis pass that ran on this frame, if any.
     /// Nil means "no new analysis" — distinct from an empty array, which means
     /// analysis ran and found nothing.
     var analyzedFields: [ScreenField]?
+    /// Appearance-sentinel NCC for this frame, exposed for telemetry/debug
+    /// overlays. Nil when the sentinel did not evaluate (not locked, sentinel
+    /// disabled, unsampleable frame, or a too-flat patch pair).
+    var sentinelNCC: Float?
+    /// True while the appearance sentinel's hard veto is standing — the
+    /// tracked quad no longer looks like what was locked.
+    var sentinelVetoed = false
     /// True while the pipeline is disabled — the caller should behave exactly
     /// as it did before this type existed.
     var isIdle = true
@@ -76,9 +90,19 @@ actor ScreenLockPipeline {
     /// acquisition feels immediate, slow enough that the expensive Vision
     /// rectangle+text pass is not on every frame.
     var acquiringDetectionInterval: TimeInterval = 0.2
-    /// Detection interval while locked and tracking healthily — detection is
-    /// only needed to notice a better/changed target, so it backs right off.
-    var lockedDetectionInterval: TimeInterval = 2.0
+    /// Detection interval while locked and tracking healthily. This is the
+    /// INDEPENDENT REVALIDATION cadence, not an optimization knob: every pass
+    /// feeds `TrackVerifier`, and it is the only mechanism that can catch a
+    /// tracker that has drifted onto background while reporting healthy
+    /// (that tracker is self-consistent, so its own confidence never falls).
+    /// 0.5 s bounds how long a drifted lock can survive; the earlier 2.0 s
+    /// left a drifted-but-LOCKED reading on screen for up to two seconds.
+    var lockedDetectionInterval: TimeInterval = 0.5
+    /// A locked tracker that produces NO update for this long fails the lock
+    /// (plan Phase 7: `trackerHasNoFreshUpdate → FAIL_AFTER_TIMEOUT`). A stale
+    /// quad rendered as a healthy lock is exactly the "stale geometry
+    /// presented as truth" failure the plan forbids.
+    var staleTrackerTimeout: TimeInterval = 0.75
     /// Detection interval while degraded or reacquiring: the detector is the
     /// recovery mechanism, so it runs hot.
     var recoveringDetectionInterval: TimeInterval = 0.1
@@ -108,6 +132,18 @@ actor ScreenLockPipeline {
     private var selectedFields: [ScreenField] = []
     /// Set when the caller wants a fresh analysis pass on the next frame.
     private var analysisRequested = false
+    /// Independent geometric verification of the current lock (Phase 7–8,
+    /// hardened per §11). Configuration is fixed at init so the benchmark can
+    /// instantiate feature variants.
+    private var verifier: TrackVerifier
+    /// Per-frame appearance verification of the locked quad (§11's
+    /// between-detection-passes defense). Evaluated on every locked frame at
+    /// Stage 1b; a veto is handled exactly like a DIVERGED detection verdict.
+    private var sentinel: AppearanceSentinel
+    /// Master switch for the sentinel, fixed at init for benchmark variants.
+    private let sentinelEnabled: Bool
+    /// Timestamp of the last frame the tracker produced geometry for.
+    private var lastTrackerUpdateAt: TimeInterval?
     /// The window's geometry as the magnet has moved it, carried across frames.
     ///
     /// Load-bearing: magnetic attraction is *incremental* — each frame moves
@@ -122,11 +158,17 @@ actor ScreenLockPipeline {
     init(detector: ScreenCandidateDetector = ScreenCandidateDetector(),
          tracker: VisionScreenTracker = VisionScreenTracker(),
          analyzer: ScreenFieldAnalyzer = ScreenFieldAnalyzer(),
-         snap: MagneticSnapEngine = MagneticSnapEngine()) {
+         snap: MagneticSnapEngine = MagneticSnapEngine(),
+         verifierConfig: TrackVerifier.Config = TrackVerifier.Config(),
+         sentinelEnabled: Bool = true,
+         sentinelConfig: AppearanceSentinel.Config = AppearanceSentinel.Config()) {
         self.detector = detector
         self.tracker = tracker
         self.analyzer = analyzer
         self.snap = snap
+        self.verifier = TrackVerifier(config: verifierConfig)
+        self.sentinel = AppearanceSentinel(config: sentinelConfig)
+        self.sentinelEnabled = sentinelEnabled
     }
 
     // MARK: Control
@@ -147,6 +189,9 @@ actor ScreenLockPipeline {
         target = nil
         selectedFields = []
         attractedSelection = nil
+        verifier.reset()
+        sentinel.reset()
+        lastTrackerUpdateAt = nil
         await tracker.reset()
     }
 
@@ -169,6 +214,9 @@ actor ScreenLockPipeline {
         lastAnalysisAt = nil
         analysisRequested = false
         attractedSelection = nil
+        verifier.reset()
+        sentinel.reset()
+        lastTrackerUpdateAt = nil
         await detector.reset()
         await tracker.reset()
     }
@@ -199,12 +247,42 @@ actor ScreenLockPipeline {
                 target?.quad = tracked.quad
                 target?.trackingConfidence = tracked.confidence
                 target?.lastUpdated = tracked.timestamp
+                lastTrackerUpdateAt = tracked.timestamp
             } else {
                 // A failed frame is not an immediate loss: the snap engine's
                 // degraded/reacquisition timeouts decide that. Reporting nil
                 // lets it apply its own hysteresis rather than this layer
-                // second-guessing it.
+                // second-guessing it — UNTIL the silence exceeds
+                // `staleTrackerTimeout`, at which point a stale quad must not
+                // keep masquerading as a live one (Phase 7 hard veto:
+                // trackerHasNoFreshUpdate → FAIL_AFTER_TIMEOUT).
                 trackingConfidence = nil
+                if let last = lastTrackerUpdateAt {
+                    let silence = t - last
+                    if silence.isFinite, silence > staleTrackerTimeout {
+                        trackingConfidence = 0
+                    }
+                }
+            }
+        }
+
+        // --- Stage 1b: appearance sentinel (every frame while locked) --------
+        // The between-detection-passes defense (§11). The verifier can only
+        // testify on frames where the detector ran (every ~0.5 s while
+        // locked); in between, a quad that has drifted onto background is
+        // invisible to every geometric check — the tracker's own confidence is
+        // self-referential and reports healthy forever. The sentinel compares
+        // what the locked quad LOOKS like against the appearance captured at
+        // lock (refreshed on every corroborated pass), on every frame. A veto
+        // is handled exactly like a DIVERGED detection verdict: tracking
+        // confidence forced to zero, which drives the snap engine's `.lost`
+        // path into same-frame reacquisition, and `measurementsValid` goes
+        // false with it below.
+        if sentinelEnabled, let quad = target?.quad, snap.state.isLockedOrTracking {
+            let verdict = sentinel.evaluate(pixelBuffer: frame.pixelBuffer, quad: quad)
+            update.sentinelNCC = sentinel.lastNCC
+            if case .vetoed = verdict {
+                trackingConfidence = 0
             }
         }
 
@@ -215,6 +293,52 @@ actor ScreenLockPipeline {
             lastDetectionAt = t
             lastCandidates = found
             freshCandidates = found
+        }
+
+        // --- Stage 2b: INDEPENDENT VERIFICATION (Phases 7–8) ----------------
+        // Every fresh detection pass while locked testifies for or against the
+        // tracked geometry. The tracker's own confidence is deliberately not
+        // consulted: a tracker that drifted onto static background is
+        // self-consistent and reports healthy forever — the observed live
+        // failure. A DIVERGED verdict is a hard veto that no aggregate score
+        // can override: tracking confidence is forced to zero, which drives
+        // the snap engine's `.lost` path into reacquisition on this same
+        // frame, and `measurementsValid` below goes false with it.
+        if let fresh = freshCandidates, let trackedQuad = target?.quad,
+           snap.state.isLockedOrTracking {
+            let verdict = verifier.evaluate(tracked: trackedQuad, candidates: fresh, timestamp: t)
+#if DEBUG
+            // Verdict trace for live-run analysis. Screenshot sampling proved
+            // twice that it under-samples this state machine; the trace is the
+            // ground truth for whether the veto engages.
+            Self.verifyLog.log("verdict=\(String(describing: verdict), privacy: .public) state=\(self.snap.state.displayLabel, privacy: .public) unverified=\(self.verifier.isUnverified) t=\(t, format: .fixed(precision: 2))")
+#endif
+            switch verdict {
+            case .corroborated:
+                // The detector just independently blessed this geometry, so
+                // what it looks like RIGHT NOW is the lock's appearance.
+                // Refreshing here is what keeps legitimate digit changes from
+                // ever decaying the sentinel's similarity — the reference is
+                // never older than the last corroborated pass.
+                if sentinelEnabled {
+                    sentinel.refreshReference(pixelBuffer: frame.pixelBuffer, quad: trackedQuad)
+                }
+            case .diverged, .transit:
+                // Both are hard vetoes. Transit — a display sweeping THROUGH a
+                // parked lock — is drift wearing corroboration's clothes; it
+                // kept the original live failure alive by re-blessing a dead
+                // lock every time the bouncing panel crossed it.
+                trackingConfidence = 0
+            case .unsupported where verifier.isUnverified:
+                // Sustained absence of corroboration is not the drift
+                // signature (nothing confident was seen ANYWHERE — occlusion,
+                // glare, display off), so it degrades rather than kills:
+                // capped below the healthy band, the snap engine's own
+                // degraded → timeout → reacquisition machinery takes over.
+                trackingConfidence = min(trackingConfidence ?? 0, 0.4)
+            default:
+                break
+            }
         }
 
         // --- Stage 3: snap state machine ------------------------------------
@@ -253,6 +377,14 @@ actor ScreenLockPipeline {
 
         // --- Stage 4: lock commit -------------------------------------------
         if outcome.didLock, let locked = outcome.lockedCandidate {
+            verifier.beginLock(at: t)
+            if sentinelEnabled {
+                // Fingerprint the locked appearance from the very frame the
+                // lock was committed on. If this frame is unsampleable the
+                // sentinel abstains for the life of the lock (never guesses).
+                sentinel.beginLock(pixelBuffer: frame.pixelBuffer, quad: locked.quad)
+            }
+            lastTrackerUpdateAt = t
             let newTarget = TrackedTarget(id: locked.id,
                                           quad: locked.quad,
                                           detectionConfidence: locked.confidence,
@@ -267,6 +399,9 @@ actor ScreenLockPipeline {
             target = nil
             selectedFields = []
             attractedSelection = nil
+            verifier.reset()
+            sentinel.reset()
+            lastTrackerUpdateAt = nil
             await tracker.reset()
         }
         if let target {
@@ -281,7 +416,21 @@ actor ScreenLockPipeline {
         }
 
         // --- Stage 6: field mapping → tracked-geometry ROIs -----------------
-        if let target, !selectedFields.isEmpty {
+        // Gated on VERIFIED health, not on target existence. This is the
+        // data-integrity fix: previously ROIs were produced whenever a target
+        // existed, so a drifted-but-"healthy" tracker kept feeding OCR regions
+        // of empty background and the readings sailed through validation.
+        // `MeasurementValid = ScreenLockValid AND TrackingHealthy AND
+        // independently verified` — a reading from unverified geometry is not
+        // a low-quality reading, it is not a reading at all.
+        // The standing (possibly refreshed-away) sentinel veto, surfaced after
+        // Stage 2b so a corroborated refresh on this same frame reads healthy.
+        update.sentinelVetoed = sentinelEnabled && !sentinel.isHealthy
+        update.measurementsValid = {
+            guard case .locked = outcome.state else { return false }
+            return !verifier.isUnverified && sentinel.isHealthy
+        }()
+        if update.measurementsValid, let target, !selectedFields.isEmpty {
             var rois: [UUID: NormalizedROI] = [:]
             for field in selectedFields {
                 if let roi = field.frameRegion(in: target) {
@@ -335,6 +484,11 @@ actor ScreenLockPipeline {
         }
         return await analyzer.analyze(canonicalImage: canonical)
     }
+
+#if DEBUG
+    /// Verdict/state trace, readable via `log show --predicate 'subsystem == "daqpal"'`.
+    private static let verifyLog = Logger(subsystem: "daqpal", category: "verify")
+#endif
 
     /// Seed geometry when the user has placed nothing: a centered window the
     /// magnet can attract from.

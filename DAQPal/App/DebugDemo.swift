@@ -9,6 +9,16 @@
 //    -daqpal-demo-results     open the results screen with fabricated demo data
 //    -daqpal-demo-motion M    synthetic display motion: steady|yaw|pitch|roll|
 //                             tumble|bounce (ROI-tracking stress rig)
+//    -daqpal-dual-reading     synthetic display shows a large primary reading
+//                             over a smaller MAX one, as the target IR
+//                             thermometer does. Window sub-field selection only
+//                             engages on two-or-more numbers, so this is the
+//                             only way to reach it in the Simulator; pair with
+//                             -daqpal-auto-roi to land a window on the panel.
+//                             Read by `SyntheticFrameSource` itself at
+//                             construction rather than applied here, because
+//                             the panel's content is fixed for the life of the
+//                             frame source — there is no live switch to drive.
 //  Demo data is clearly synthetic (deterministic sine series) and exists only
 //  for layout/interaction verification — it never ships in release builds and
 //  is never a claim about recognition accuracy.
