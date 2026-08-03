@@ -1,12 +1,32 @@
 # Deliverable K — Next Ultracode Session Prompt
 
-Two prompts. **Run K0 first** (mechanical, unblocks everything). **K1 is the real work.**
+**Run K1. K0 is already done — do not run it.** (Status updated 2026-08-03 after K0 was executed.)
 
-Rationale for this order: K1's evidence gate requires a green suite, and the suite cannot go green until the 4 `SegmentCellScannerTests` failures are fixed. Running K1 first would force the agent to violate its own exit condition — the exact blocker (E1) this audit found in the existing plan.
+## Why K0 is not required
+
+K0 was executed in the same session that authored it. Every item in its own Definition of Done was verified mechanically against the repo, not assumed:
+
+| K0 DoD item | State | Evidence |
+|---|---|---|
+| Working tree clean | PASS | `git status --porcelain` → 0 lines |
+| Scheme in version control | PASS | `DAQPal.xcodeproj/xcshareddata/xcschemes/DAQPal.xcscheme` is tracked; verified to build both test bundles |
+| All Deliverable I edits applied | PASS | 12/12 spot-checks pass (DoD-5, yield floor, exact test command, §2 rules 7–9, WS-D, WS-E, spec path, `CLAUDE.md` reclass, ws-a invariant, ws-b floor invariant) |
+| Test count recorded in §5 | PASS | `855 passed / 5 failed / 2 skipped / 1 expected failure = 863 cases` `[sim iPhone 16e iOS 18.4, Debug, serial]` |
+| Commits made | PASS | 7 commits `3156d4f · c07315c · c5c81a9 · 67e68cd · 372e3da · 60b5a61 · a7a48e6`, all pushed to `origin/segment-cell-scanner` (0 unpushed) |
+
+K0's stated purpose was to make it possible for any workstream session to satisfy its exit invariant. That is now true, so re-running it would be a no-op at best and would re-litigate settled commits at worst.
+
+### Three errors in K0 as originally written, recorded so they are not repeated
+
+1. **Wrong simulator.** K0 specified `-destination 'platform=iOS Simulator,name=iPhone 16 Pro'`. That simulator does not exist on this machine (available: iPhone 16e / 18.4, iPhone 17 family / 26.5). The command would have failed immediately.
+2. **Wrong expected count.** K0 expected `857/5/2`. The real measured baseline is `855/5/2 + 1 expected failure`. The 857 figure came from grepping stdout on a log that **double-prints its per-case lines** — the precise failure mode `§2` rule 4 now forbids.
+3. **Self-contradiction.** K0's task 1 said "commit the working tree" while its FORBIDDEN list said "any `DAQPal/**.swift`". Committing pre-existing untracked Swift is not *editing* it, but the prompt should have said so. It resolved correctly in practice (no application code was authored in K0), but a stricter agent would have deadlocked.
 
 ---
 
-## K0 — Unblock the plan set (mechanical, ~1 session)
+## K0 — Unblock the plan set — ✅ COMPLETE 2026-08-03, DO NOT RUN
+
+*Retained verbatim for provenance. Superseded by the commits listed above.*
 
 ```
 ultracode
@@ -89,7 +109,22 @@ ultracode
 TASK: B0 — make the suite green and close the accepted-at-low-confidence hole.
 Workstream: WS-B (OCR accuracy).
 
-PREREQUISITES: K0 complete (working tree committed, plan set self-consistent, scheme shared).
+PREREQUISITES: SATISFIED. K0 completed 2026-08-03 (commits 3156d4f..a7a48e6, pushed).
+Working tree is clean, the plan set is self-consistent, the scheme is shared. Start here.
+
+MEASURED STARTING STATE (do not re-measure before you begin; this is from the §2 command):
+  855 passed / 5 failed / 2 skipped / 1 expected failure = 863 cases
+  [sim iPhone 16e iOS 18.4, Debug, serial]
+
+SCOPE CORRECTION — read this before trusting the DoD below. Of the 5 failures, only 4 are
+yours. The 5th, DAQPalUITests/DragLatencyUITests.testDragLatencyWhileSearching, lives in
+DAQPalUITests/ which §7 assigns to WS-D, not WS-B. K1 therefore CANNOT reach a
+zero-failure suite, and any prompt claiming otherwise is wrong. Your target is:
+  - 0 failures in DAQPalTests (the 4 SegmentCellScannerTests fixed)
+  - DragLatencyUITests still failing, untouched, and explicitly reported as out of scope
+Do NOT quarantine or edit that UI test to make a number look green. Its measured signature
+(5 callbacks, p50 134.6ms, 4 stalls, 4 dropped frames) is simulator gesture starvation and
+belongs to a separate WS-D/WS-A triage.
 
 WHY THIS TASK EXISTS: two independent problems, both blocking.
  (a) 4 SegmentCellScannerTests fail, so no workstream can satisfy "full suite green at
@@ -108,7 +143,7 @@ ALLOWED FILES (WS-B-owned):
   - DAQPal/OCR/SegmentCellScanner.swift
   - DAQPal/Processing/ConfidenceEngine.swift
   - DAQPalTests/SegmentCellScannerTests.swift
-  - DAQPalTests/ConfidenceEngineTests.swift (create if absent)
+  - DAQPalTests/ConfidenceEngineTests.swift (CONFIRMED ABSENT — you must create it)
   - DAQPalTests/Support/ValidationHarness.swift
 
 FORBIDDEN FILES:
@@ -172,14 +207,18 @@ MUST STAY GREEN: the entire suite. Specifically DecimalRescueTests (23),
 DecimalBenchmarkTests, DecimalIntegrityTests, SevenSegmentSamplerTests, CorpusTests.
 
 EVIDENCE REQUIRED:
-  - Test counts before and after, via xcresulttool (expected after: 861+/0/2).
+  - Test counts before and after, via xcresulttool. Expected after: 4 scanner failures gone
+    (>=859 passed), plus however many NEW tests you add. Only DragLatencyUITests may still
+    fail. Report the exact numbers, never a rounded claim.
   - For the confidence floor: the count of readings in DecimalBenchmarkTests that flip from
     accepted to refused, and confirmation that ZERO correct readings were refused.
-  - Provenance tag [sim iPhone 16 Pro, Debug, serial] on every number.
+  - BLAST RADIUS: 20 test files reference `accepted` and there are 17 direct acceptance
+    assertions. Enumerate every one the floor changes, and justify each individually.
+  - Provenance tag [sim iPhone 16e, Debug, serial] on every number.
 
 COMMANDS:
   xcodebuild test -scheme DAQPal \
-    -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
+    -destination 'platform=iOS Simulator,name=iPhone 16e,OS=18.4' \
     -resultBundlePath /tmp/daqpal_b0.xcresult -parallel-testing-enabled NO
   xcrun xcresulttool get test-results tests --format json --path /tmp/daqpal_b0.xcresult
 
@@ -191,7 +230,7 @@ LEDGER UPDATE (MASTER_PLAN.md §5):
   - Session log row per §2 rule 8.
 
 DEFINITION OF DONE:
-  - Suite green: 0 failures.
+  - 0 failures in DAQPalTests. DragLatencyUITests may still fail (out of scope, see above).
   - No reading can export accepted: true below the documented fused-confidence floor.
   - The floor's value is justified with measured numbers, not asserted.
   - SegmentCellScanner still has zero production call sites — wiring it is B4, NOT this
