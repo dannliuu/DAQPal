@@ -261,6 +261,21 @@ private struct DebugCaptionView: View {
     @Environment(AppState.self) private var appState
 
     var body: some View {
+        #if DEBUG
+        // Written once per gesture, read by `DragLatencyUITests`. Carries the
+        // measured callback-interval distribution out of the app so the drag
+        // can be assessed from what it actually experienced.
+        if let summary = appState.gestureLatencySummary {
+            Text(summary)
+                .font(Theme.mono(9))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(RoundedRectangle(cornerRadius: 3).fill(Color.black.opacity(0.6)))
+                .accessibilityIdentifier("gesture-latency")
+                .accessibilityLabel(summary)
+        }
+        #endif
         if appState.showDebugOverlay {
             Text(appState.debugText ?? "—")
                 .font(Theme.mono(10))

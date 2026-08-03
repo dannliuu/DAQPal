@@ -17,6 +17,18 @@
 //  view-local `@State` rect while active and commit to `AppState` once, in
 //  `.onEnded`.
 //
+//  Drag JITTER (Gate 2A) is a separate defect with a separate fix. This
+//  overlay used to read `appState.liveReadings` in its own body and hand each
+//  reading down to `ROIWindowView` as an init parameter. `liveReadings` is
+//  rewritten at capture rate, so the overlay's body — and with it every
+//  `ROIWindowView` and the `DragGesture` its body attaches — was rebuilt on
+//  every processed frame, including while the user's finger was down.
+//  The lock-dependent visuals therefore now live in LEAF views
+//  (`ROIWindowBorder`, `ROIWindowHandle`, `ROIWindowLabel`) which read
+//  `liveReadings` themselves. Neither this overlay's body nor `ROIWindowView`'s
+//  reads any per-frame state, so a new reading re-renders only the small
+//  leaves and never reconstructs a gesture mid-drag.
+//
 
 import SwiftUI
 
@@ -41,10 +53,24 @@ struct ROISelectionOverlay: View {
                 // PLACE" ghost. Those ghosts stack on top of each other AND sit
                 // above `FieldSelectionOverlay`, swallowing the taps meant to
                 // select a field. `FieldSelectionOverlay` draws these devices.
-                ForEach(appState.devices.filter { !fieldBacked.contains($0.id) }) { device in
-                    ROIWindowView(device: device,
-                                 mapper: mapper,
-                                 liveReading: appState.liveReadings[device.id] ?? .empty)
+                //
+                // Note what is NOT read here: `appState.liveReadings`. See the
+                // file header — reading it would rebuild every window's gesture
+                // at capture rate.
+                // Sub-field devices are excluded for the same reason as
+                // field-backed ones: something else already draws them. A
+                // sub-field IS a box inside its parent's window
+                // (`WindowSubFieldLayer`), so giving it a second window of its
+                // own stacks a draggable frame on top of the parent — and that
+                // window's pan catcher then swallows every tap meant for the
+                // chips underneath it, which is how selecting a sub-field made
+                // it impossible to deselect. It would also let the user drag a
+                // sub-field independently of the parent it is defined relative
+                // to, which the next recomposition would silently undo.
+                ForEach(appState.devices.filter {
+                    !fieldBacked.contains($0.id) && !$0.isSubField
+                }) { device in
+                    ROIWindowView(device: device, mapper: mapper)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
@@ -52,18 +78,86 @@ struct ROISelectionOverlay: View {
     }
 }
 
+/// Which corner a resize gesture is dragging. File-level (not nested in the
+/// private view) so `ROIWindowGeometry` and its tests can name it.
+enum ROIResizeHandle: CaseIterable, Hashable {
+    case topLeft, topRight, bottomLeft, bottomRight
+}
+
+/// Pure geometry for the ROI window gestures, extracted from the gesture
+/// closures so the drag/resize math is testable without a UI harness.
+///
+/// Both entry points are total functions of `(anchor, translation)`: the
+/// anchor is frozen at gesture start and every `onChanged` tick reapplies the
+/// gesture's *cumulative* translation to it. That is what makes a drag
+/// monotonic — the result never depends on the previous tick's output, so a
+/// dropped or duplicated callback cannot accumulate error, and `onEnded`
+/// recomputing from the same anchor and the same translation reproduces the
+/// last rendered rect exactly.
+enum ROIWindowGeometry {
+
+    /// Whole-window move, clamped so the window stays inside the container.
+    static func movedRect(anchor: CGRect, translation: CGSize, containerSize: CGSize) -> CGRect {
+        var moved = anchor.offsetBy(dx: translation.width, dy: translation.height)
+        moved.origin.x = min(max(moved.origin.x, 0), max(0, containerSize.width - moved.width))
+        moved.origin.y = min(max(moved.origin.y, 0), max(0, containerSize.height - moved.height))
+        return moved
+    }
+
+    /// Corner resize, clamped to the container and to `minimumSize` per axis.
+    static func resizedRect(handle h: ROIResizeHandle,
+                            anchor: CGRect,
+                            translation: CGSize,
+                            containerSize: CGSize,
+                            minimumSize: CGFloat) -> CGRect {
+        var left = anchor.minX, right = anchor.maxX
+        var top = anchor.minY, bottom = anchor.maxY
+        switch h {
+        case .topLeft:
+            left += translation.width
+            top += translation.height
+        case .topRight:
+            right += translation.width
+            top += translation.height
+        case .bottomLeft:
+            left += translation.width
+            bottom += translation.height
+        case .bottomRight:
+            right += translation.width
+            bottom += translation.height
+        }
+        left = max(0, left)
+        top = max(0, top)
+        right = min(containerSize.width, right)
+        bottom = min(containerSize.height, bottom)
+        if right - left < minimumSize {
+            switch h {
+            case .topLeft, .bottomLeft: left = right - minimumSize
+            default: right = left + minimumSize
+            }
+        }
+        if bottom - top < minimumSize {
+            switch h {
+            case .topLeft, .topRight: top = bottom - minimumSize
+            default: bottom = top + minimumSize
+            }
+        }
+        return CGRect(x: left, y: top, width: right - left, height: bottom - top)
+    }
+}
+
 /// One device's draggable/resizable ROI window, or its "not yet placed"
 /// ghost. Reads `AppState` directly (rather than via a binding/callback)
 /// since it needs `appState.updateDevice` for both drag and resize commits.
+///
+/// This view's body must stay free of per-frame observable reads: it is the
+/// view that attaches the drag and resize gestures, and re-evaluating it
+/// rebuilds them. It reads `device` (changes only on commit or auto-tracking),
+/// `mapper` (changes on rotation/first frame) and its own gesture `@State`.
 private struct ROIWindowView: View {
     @Environment(AppState.self) private var appState
     let device: Device
     let mapper: AspectFillMapper
-    let liveReading: LiveReading
-
-    private enum Handle: CaseIterable, Hashable {
-        case topLeft, topRight, bottomLeft, bottomRight
-    }
 
     /// Rect captured once at gesture start; each `onChanged` reapplies the
     /// gesture's cumulative translation to this anchor instead of the
@@ -85,7 +179,6 @@ private struct ROIWindowView: View {
     private static let minimumViewSize: CGFloat = 32
 
     private var isPlaced: Bool { device.roi != nil }
-    private var isLocked: Bool { isPlaced && liveReading.locked }
     private var containerSize: CGSize { mapper.containerSize }
 
     /// A centered starting window, sized like `NormalizedROI.defaultROI`,
@@ -101,22 +194,6 @@ private struct ROIWindowView: View {
         return mapper.viewRect(fromNormalized: device.roi ?? ghostNormalizedROI)
     }
 
-    private var borderColor: Color { isLocked ? Theme.brandYellow : Theme.roiSearching }
-
-    private var strokeStyle: StrokeStyle {
-        isLocked ? StrokeStyle(lineWidth: 2)
-                 : StrokeStyle(lineWidth: 2, dash: [5, 4])
-    }
-
-    private var labelText: String {
-        guard isPlaced else { return "DRAG TO PLACE" }
-        if isLocked {
-            let pct = String(format: "%.1f", liveReading.confidence * 100)
-            return "⠿ \(device.name) · \(pct)%"
-        }
-        return "⠿ \(device.name) · SEARCHING"
-    }
-
     var body: some View {
         let rect = currentRect
         window(in: rect)
@@ -124,75 +201,90 @@ private struct ROIWindowView: View {
             // Ghost windows read as visually lighter than an active,
             // placed-but-searching ROI (same searching palette otherwise).
             .opacity(isPlaced ? 1 : 0.6)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(accessibilityLabel)
+            // A window restored from a previous session is already placed and
+            // will never be committed again, so without this its sub-fields
+            // would never be offered at all — the feature would appear only to
+            // users who happened to re-drag their window.
+            .onAppear {
+                if isPlaced { appState.requestWindowAnalysis(for: device.id) }
+            }
     }
-
-    private var accessibilityLabel: String {
-        guard isPlaced else {
-            return "\(device.name) region of interest, not placed. Drag to place over the display."
-        }
-        if isLocked {
-            let pct = String(format: "%.1f", liveReading.confidence * 100)
-            return "\(device.name) region of interest, locked, \(pct) percent confidence"
-        }
-        return "\(device.name) region of interest, searching"
-    }
-
-    /// The locked-glow shadow is suppressed while a gesture is active: a
-    /// `.shadow` is a blur pass re-rendered on every `onChanged` tick
-    /// (60–120 Hz), and dropping it during the drag is imperceptible but
-    /// keeps the gesture's render cost to a plain stroke.
-    private var showsGlow: Bool { isLocked && liveDragRect == nil }
 
     @ViewBuilder
     private func window(in rect: CGRect) -> some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(borderColor, style: strokeStyle)
-                .shadow(color: showsGlow ? Theme.brandYellow.opacity(0.45) : .clear,
-                       radius: showsGlow ? 8 : 0)
-                .contentShape(Rectangle())
-                .gesture(windowDragGesture)
+            // The gesture is attached HERE, by this body, to a leaf that reads
+            // the lock state on its own. When a reading changes, only
+            // `ROIWindowBorder` re-evaluates — this body does not, so the
+            // `DragGesture` below survives the frame untouched.
+            ROIWindowBorder(deviceID: device.id,
+                            isPlaced: isPlaced,
+                            isGesturing: liveDragRect != nil)
+                .accessibilityHidden(true)
+                // UIKit recognizer instead of SwiftUI's `DragGesture`. Measured
+                // on device: touch and render cadence are both flawless (16.7ms,
+                // zero dropped frames) while the drag still feels sluggish, so
+                // the defect is LATENCY, which neither cadence probe can see.
+                // See `PanGestureCatcher` for the reasoning.
+                .overlay(PanGestureCatcher(onChanged: { translation in
+                    beginDragIfNeeded()
+                    #if DEBUG
+                    GestureLatencyProbe.shared.tick()
+                    #endif
+                    guard let anchor = windowDragAnchor else { return }
+                    liveDragRect = ROIWindowGeometry.movedRect(anchor: anchor,
+                                                               translation: translation,
+                                                               containerSize: containerSize)
+                }, onEnded: { translation in
+                    if let anchor = windowDragAnchor {
+                        commit(ROIWindowGeometry.movedRect(anchor: anchor,
+                                                            translation: translation,
+                                                            containerSize: containerSize))
+                    }
+                    endDrag()
+                }))
 
             if isPlaced {
-                ForEach(Handle.allCases, id: \.self) { h in
+                ForEach(ROIResizeHandle.allCases, id: \.self) { h in
                     handle(h)
                         .position(handleCorner(h, in: rect.size))
+                }
+                // Above the pan catcher so its chips are tappable, but the
+                // outlines are inert — see `WindowSubFieldLayer` for why the
+                // boxes themselves must not take the touch. Hidden mid-drag:
+                // the candidates describe where the window WAS, so drawing
+                // them against a moving window shows them sliding off the
+                // numbers they found.
+                if liveDragRect == nil {
+                    WindowSubFieldLayer(deviceID: device.id, windowSize: rect.size)
+                        .frame(width: max(rect.width, 1), height: max(rect.height, 1))
                 }
             }
         }
         .frame(width: max(rect.width, 1), height: max(rect.height, 1))
         .overlay(alignment: .topLeading) {
-            label.offset(x: -2, y: -24)
+            // The label is the window's accessibility element: it is the only
+            // part whose text depends on the live reading, and it is already a
+            // leaf, so the dynamic LOCKED/SEARCHING wording stays correct
+            // without this body ever reading `liveReadings`.
+            ROIWindowLabel(deviceID: device.id,
+                           deviceName: device.name,
+                           isPlaced: isPlaced)
+                .offset(x: -2, y: -24)
         }
     }
 
-    private var label: some View {
-        Text(labelText)
-            .font(Theme.ui(10, weight: .heavy))
-            .tracking(0.3)
-            .foregroundStyle(isLocked ? Theme.ink : .white)
-            .lineLimit(1)
-            .fixedSize()
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(RoundedRectangle(cornerRadius: 4).fill(borderColor))
+    private func handle(_ h: ROIResizeHandle) -> some View {
+        ROIWindowHandle(deviceID: device.id,
+                        isPlaced: isPlaced,
+                        hitSize: Self.handleHitSize,
+                        visualSize: Self.handleVisualSize)
+            .contentShape(Rectangle())
+            .gesture(resizeGesture(for: h))
+            .accessibilityHidden(true)
     }
 
-    private func handle(_ h: Handle) -> some View {
-        ZStack {
-            Color.clear.frame(width: Self.handleHitSize, height: Self.handleHitSize)
-            RoundedRectangle(cornerRadius: 2)
-                .fill(borderColor)
-                .frame(width: Self.handleVisualSize, height: Self.handleVisualSize)
-        }
-        .contentShape(Rectangle())
-        .gesture(resizeGesture(for: h))
-        .accessibilityHidden(true)
-    }
-
-    private func handleCorner(_ h: Handle, in size: CGSize) -> CGPoint {
+    private func handleCorner(_ h: ROIResizeHandle, in size: CGSize) -> CGPoint {
         switch h {
         case .topLeft: CGPoint(x: 0, y: 0)
         case .topRight: CGPoint(x: size.width, y: 0)
@@ -203,6 +295,32 @@ private struct ROIWindowView: View {
 
     // MARK: Gestures
 
+    /// First movement of a drag: freeze the anchor and pause every automatic
+    /// writer. Split out so the UIKit recognizer and the (retained) SwiftUI
+    /// resize gesture share identical bookkeeping.
+    private func beginDragIfNeeded() {
+        guard windowDragAnchor == nil else { return }
+        windowDragAnchor = currentRect
+        appState.isEditingROI = true
+        #if DEBUG
+        GestureLatencyProbe.shared.begin()
+        RenderCadenceProbe.shared.begin()
+        #endif
+    }
+
+    private func endDrag() {
+        windowDragAnchor = nil
+        liveDragRect = nil
+        appState.isEditingROI = false
+        #if DEBUG
+        GestureLatencyProbe.shared.end()
+        RenderCadenceProbe.shared.end()
+        appState.gestureLatencySummary =
+            GestureLatencyProbe.shared.summary.debugLine
+            + " || " + RenderCadenceProbe.shared.summary.debugLine
+        #endif
+    }
+
     private var windowDragGesture: some Gesture {
         DragGesture(minimumDistance: 2)
             .onChanged { value in
@@ -211,29 +329,56 @@ private struct ROIWindowView: View {
                 // is set only here (not every tick) — repeated writes would
                 // reintroduce the same per-tick `AppState` mutation this fix
                 // removes.
-                if windowDragAnchor == nil { appState.isEditingROI = true }
+                if windowDragAnchor == nil {
+                    appState.isEditingROI = true
+                    #if DEBUG
+                    GestureLatencyProbe.shared.begin()
+                    RenderCadenceProbe.shared.begin()
+                    #endif
+                }
+                #if DEBUG
+                // Measures what the user actually perceives: the spacing of
+                // callbacks while the finger moves. Three prior diagnoses of
+                // the drag defect were argued from code and all survived the
+                // symptom; this records the distribution instead.
+                GestureLatencyProbe.shared.tick()
+                #endif
                 let anchor = windowDragAnchor ?? currentRect
                 windowDragAnchor = anchor
                 liveDragRect = clampedMove(from: anchor, translation: value.translation)
             }
             .onEnded { value in
+                // Recomputed from the SAME frozen anchor with the same pure
+                // function, so the committed rect is identical to the last one
+                // rendered whenever the final translation matches.
                 if let anchor = windowDragAnchor {
                     commit(clampedMove(from: anchor, translation: value.translation))
-                    appState.isEditingROI = false
                 }
                 windowDragAnchor = nil
                 liveDragRect = nil
+                // Cleared unconditionally. Leaving it inside the `if` above
+                // meant a gesture that ended without a usable anchor left
+                // auto-tracking paused for the rest of the session.
+                appState.isEditingROI = false
+                #if DEBUG
+                GestureLatencyProbe.shared.end()
+                RenderCadenceProbe.shared.end()
+                // Touch cadence AND render cadence. The first rules out event
+                // starvation; only the second speaks to judder.
+                appState.gestureLatencySummary =
+                    GestureLatencyProbe.shared.summary.debugLine
+                    + " || " + RenderCadenceProbe.shared.summary.debugLine
+                #endif
             }
     }
 
     private func clampedMove(from anchor: CGRect, translation: CGSize) -> CGRect {
-        var moved = anchor.offsetBy(dx: translation.width, dy: translation.height)
-        moved.origin.x = min(max(moved.origin.x, 0), max(0, containerSize.width - moved.width))
-        moved.origin.y = min(max(moved.origin.y, 0), max(0, containerSize.height - moved.height))
-        return moved
+        ROIWindowGeometry.movedRect(anchor: anchor,
+                                    translation: translation,
+                                    containerSize: containerSize)
     }
 
-    private func resizeGesture(for h: Handle) -> some Gesture {
+    private func resizeGesture(for h: ROIResizeHandle) -> some Gesture {
         DragGesture(minimumDistance: 2)
             .onChanged { value in
                 if resizeAnchor == nil { appState.isEditingROI = true }
@@ -244,47 +389,19 @@ private struct ROIWindowView: View {
             .onEnded { value in
                 if let anchor = resizeAnchor {
                     commit(resizedRect(handle: h, anchor: anchor, translation: value.translation))
-                    appState.isEditingROI = false
                 }
                 resizeAnchor = nil
                 liveDragRect = nil
+                appState.isEditingROI = false
             }
     }
 
-    private func resizedRect(handle h: Handle, anchor: CGRect, translation: CGSize) -> CGRect {
-        var left = anchor.minX, right = anchor.maxX
-        var top = anchor.minY, bottom = anchor.maxY
-        switch h {
-        case .topLeft:
-            left += translation.width
-            top += translation.height
-        case .topRight:
-            right += translation.width
-            top += translation.height
-        case .bottomLeft:
-            left += translation.width
-            bottom += translation.height
-        case .bottomRight:
-            right += translation.width
-            bottom += translation.height
-        }
-        left = max(0, left)
-        top = max(0, top)
-        right = min(containerSize.width, right)
-        bottom = min(containerSize.height, bottom)
-        if right - left < Self.minimumViewSize {
-            switch h {
-            case .topLeft, .bottomLeft: left = right - Self.minimumViewSize
-            default: right = left + Self.minimumViewSize
-            }
-        }
-        if bottom - top < Self.minimumViewSize {
-            switch h {
-            case .topLeft, .topRight: top = bottom - Self.minimumViewSize
-            default: bottom = top + Self.minimumViewSize
-            }
-        }
-        return CGRect(x: left, y: top, width: right - left, height: bottom - top)
+    private func resizedRect(handle h: ROIResizeHandle, anchor: CGRect, translation: CGSize) -> CGRect {
+        ROIWindowGeometry.resizedRect(handle: h,
+                                      anchor: anchor,
+                                      translation: translation,
+                                      containerSize: containerSize,
+                                      minimumSize: Self.minimumViewSize)
     }
 
     /// Converts a view-space rect back to normalized ROI space and writes it
@@ -294,5 +411,118 @@ private struct ROIWindowView: View {
         var updated = device
         updated.roi = normalized
         appState.updateDevice(updated)
+        // The window now frames different content, so whatever sub-field
+        // candidates it had no longer describe it. Re-analysis is queued for
+        // the next frame; existing selections survive it (see
+        // `AppState.applyWindowAnalyses`).
+        appState.requestWindowAnalysis(for: device.id)
+    }
+}
+
+// MARK: - Lock-state leaves
+//
+// Each of these reads `appState.liveReadings` itself. That read is what makes
+// them re-evaluate at capture rate — which is fine, because none of them hosts
+// a gesture. Keeping the read out of `ROIWindowView` is the whole point.
+
+/// Shared lock lookup so the three leaves cannot drift apart on what "locked"
+/// means. An unplaced device is never locked: it has no ROI to read from.
+@MainActor
+private func isDeviceLocked(_ appState: AppState, _ deviceID: UUID, isPlaced: Bool) -> Bool {
+    guard isPlaced else { return false }
+    return appState.liveReadings[deviceID]?.locked == true
+}
+
+private func roiBorderColor(locked: Bool) -> Color {
+    locked ? Theme.brandYellow : Theme.roiSearching
+}
+
+/// The window outline. Also the drag gesture's hit target — `ROIWindowView`
+/// applies `.contentShape`/`.gesture` to it from the outside.
+private struct ROIWindowBorder: View {
+    @Environment(AppState.self) private var appState
+    let deviceID: UUID
+    let isPlaced: Bool
+    /// Passed down rather than read: it is `ROIWindowView`'s gesture `@State`.
+    let isGesturing: Bool
+
+    var body: some View {
+        let locked = isDeviceLocked(appState, deviceID, isPlaced: isPlaced)
+        // The locked-glow shadow is suppressed while a gesture is active: a
+        // `.shadow` is a blur pass re-rendered on every `onChanged` tick
+        // (60–120 Hz), and dropping it during the drag is imperceptible but
+        // keeps the gesture's render cost to a plain stroke.
+        let showsGlow = locked && !isGesturing
+        RoundedRectangle(cornerRadius: 6)
+            .strokeBorder(roiBorderColor(locked: locked),
+                          style: locked ? StrokeStyle(lineWidth: 2)
+                                        : StrokeStyle(lineWidth: 2, dash: [5, 4]))
+            .shadow(color: showsGlow ? Theme.brandYellow.opacity(0.45) : .clear,
+                    radius: showsGlow ? 8 : 0)
+    }
+}
+
+/// One corner handle's visuals plus its ≥44pt hit area. `ROIWindowView`
+/// attaches the resize gesture from the outside.
+private struct ROIWindowHandle: View {
+    @Environment(AppState.self) private var appState
+    let deviceID: UUID
+    let isPlaced: Bool
+    let hitSize: CGFloat
+    let visualSize: CGFloat
+
+    var body: some View {
+        let locked = isDeviceLocked(appState, deviceID, isPlaced: isPlaced)
+        ZStack {
+            Color.clear.frame(width: hitSize, height: hitSize)
+            RoundedRectangle(cornerRadius: 2)
+                .fill(roiBorderColor(locked: locked))
+                .frame(width: visualSize, height: visualSize)
+        }
+    }
+}
+
+/// The "⠿ DMM-1 · 98.2%" / "· SEARCHING" chip, and the window's accessibility
+/// element — it is the only piece whose content depends on the live reading.
+private struct ROIWindowLabel: View {
+    @Environment(AppState.self) private var appState
+    let deviceID: UUID
+    let deviceName: String
+    let isPlaced: Bool
+
+    private var isLocked: Bool { isDeviceLocked(appState, deviceID, isPlaced: isPlaced) }
+    private var confidence: Float { appState.liveReadings[deviceID]?.confidence ?? 0 }
+
+    private var labelText: String {
+        guard isPlaced else { return "DRAG TO PLACE" }
+        if isLocked {
+            return "⠿ \(deviceName) · \(String(format: "%.1f", confidence * 100))%"
+        }
+        return "⠿ \(deviceName) · SEARCHING"
+    }
+
+    private var accessibilityText: String {
+        guard isPlaced else {
+            return "\(deviceName) region of interest, not placed. Drag to place over the display."
+        }
+        if isLocked {
+            return "\(deviceName) region of interest, locked, \(String(format: "%.1f", confidence * 100)) percent confidence"
+        }
+        return "\(deviceName) region of interest, searching"
+    }
+
+    var body: some View {
+        let locked = isLocked
+        Text(labelText)
+            .font(Theme.ui(10, weight: .heavy))
+            .tracking(0.3)
+            .foregroundStyle(locked ? Theme.ink : .white)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 4).fill(roiBorderColor(locked: locked)))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityText)
     }
 }
