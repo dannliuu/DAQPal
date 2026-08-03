@@ -51,6 +51,12 @@ actor MeasurementProcessor {
     private var configs: [DeviceRecognitionConfig] = []
     private var physicalValidators: [UUID: PhysicalValidator] = [:]
     private var temporalFilters: [UUID: TemporalFilter] = [:]
+    /// Anti flip-flop consensus per device (spec §11A part 2). Per its own
+    /// header's contract: `TemporalFilter` feeds the confidence product above;
+    /// `TemporalConsensus` gates the PUBLISHED reading — a fuse-accepted frame
+    /// whose written form the window does not support is demoted to a rejected
+    /// measurement rather than surfaced.
+    private var consensus: [UUID: TemporalConsensus] = [:]
     /// Format each device's validators were built for; a change rebuilds them
     /// (signatures and rate limits are format-dependent).
     private var formatByID: [UUID: DisplayFormat] = [:]
@@ -65,11 +71,13 @@ actor MeasurementProcessor {
         let ids = Set(devices.map(\.id))
         physicalValidators = physicalValidators.filter { ids.contains($0.key) }
         temporalFilters = temporalFilters.filter { ids.contains($0.key) }
+        consensus = consensus.filter { ids.contains($0.key) }
         formatByID = formatByID.filter { ids.contains($0.key) }
 
         for device in devices where formatByID[device.id] != device.format {
             physicalValidators[device.id] = PhysicalValidator(format: device.format)
             temporalFilters[device.id] = TemporalFilter(format: device.format)
+            consensus[device.id] = TemporalConsensus()
             formatByID[device.id] = device.format
         }
         configs = devices
@@ -80,9 +88,11 @@ actor MeasurementProcessor {
     func resetTemporalState() {
         physicalValidators.removeAll()
         temporalFilters.removeAll()
+        consensus.removeAll()
         for device in configs {
             physicalValidators[device.id] = PhysicalValidator(format: device.format)
             temporalFilters[device.id] = TemporalFilter(format: device.format)
+            consensus[device.id] = TemporalConsensus()
         }
     }
 
@@ -111,11 +121,34 @@ actor MeasurementProcessor {
     ///   this frame is skipped entirely rather than recognized against its
     ///   placeholder ROI — reading the placeholder would report whatever
     ///   happened to sit at a fixed location as if it were the tracked field.
+    /// - Parameter trackingValid: `ScreenLockUpdate.measurementsValid` — true
+    ///   only while the tracked geometry is both healthy and independently
+    ///   verified. When false, every device in `requiringOverride` produces a
+    ///   REJECTED measurement (`.trackingInvalid`) instead of silence, and any
+    ///   override that somehow arrived alongside the invalid flag is ignored
+    ///   (Phase 14 invariant: `TrackingHealthy = false ⇒ MeasurementValid =
+    ///   false`, even at 99% OCR confidence). Rejected readings are logged,
+    ///   never dropped. Defaults to true so manual-only call sites (video
+    ///   import, harvester, tests) are untouched.
     func process(frame: TimestampedFrame,
                  roiOverrides: [UUID: NormalizedROI] = [:],
-                 requiringOverride: Set<UUID> = []) async -> FrameResult {
+                 requiringOverride: Set<UUID> = [],
+                 trackingValid: Bool = true) async -> FrameResult {
         guard !configs.isEmpty else {
             return FrameResult(timestamp: frame.timestamp, readings: [:], debugText: nil)
+        }
+
+        // Tracking-invalidity gate: a field-backed device under invalid
+        // tracking is observable end to end as a rejected measurement, not a
+        // hole in the record. Computed before job construction so the early
+        // "no jobs" exit below still reports these rejections.
+        var gatedReadings: [UUID: Measurement] = [:]
+        if !trackingValid {
+            for config in configs where requiringOverride.contains(config.id) {
+                gatedReadings[config.id] = .rejected(timestamp: frame.timestamp,
+                                                     reason: .trackingInvalid,
+                                                     unit: config.format.unit)
+            }
         }
 
         let jobs: [DeviceRecognitionConfig]
@@ -123,6 +156,7 @@ actor MeasurementProcessor {
             jobs = configs
         } else {
             jobs = configs.compactMap { config in
+                guard gatedReadings[config.id] == nil else { return nil }
                 if let override = roiOverrides[config.id] {
                     return DeviceRecognitionConfig(id: config.id, roi: override, format: config.format)
                 }
@@ -130,7 +164,7 @@ actor MeasurementProcessor {
             }
         }
         guard !jobs.isEmpty else {
-            return FrameResult(timestamp: frame.timestamp, readings: [:], debugText: nil)
+            return FrameResult(timestamp: frame.timestamp, readings: gatedReadings, debugText: nil)
         }
         let useDigits = useDigitLevelRecognition
         let ocr = self.ocr
@@ -153,7 +187,7 @@ actor MeasurementProcessor {
         }
 
         // --- no awaits below: validator mutation is a single sync stretch ---
-        var readings: [UUID: Measurement] = [:]
+        var readings: [UUID: Measurement] = gatedReadings
         var observedROIs: [UUID: NormalizedROI] = [:]
         var debugText: String?
         for (index, config) in jobs.enumerated() {
@@ -192,10 +226,16 @@ actor MeasurementProcessor {
     private enum RecognitionOutcome {
         case lost(debug: String?)
         case ambiguous(rawText: String?, digitConfidences: [Float], debug: String?)
-        case invalidFormat(rawText: String?, digitConfidences: [Float]?, debug: String?)
+        /// `reason` carries the validator's OWN verdict rather than a hardcoded
+        /// `.invalidFormat`. Without it a correctly-detected `.ambiguousDecimal`
+        /// was flattened to a generic format mismatch on its way to the UI, so
+        /// the user could never see that a decimal was the problem.
+        case invalidFormat(rawText: String?, digitConfidences: [Float]?,
+                           reason: RejectionReason, debug: String?)
         case parsed(value: Double, ocrConfidence: Float, rawText: String,
                     digitConfidences: [Float]?, boundingBox: NormalizedROI?,
-                    samplerCrossCheck: SamplerCrossCheck, debug: String?)
+                    samplerCrossCheck: SamplerCrossCheck,
+                    decimal: DecimalAnalysis?, displayText: String?, debug: String?)
     }
 
     private static func recognize(config: DeviceRecognitionConfig,
@@ -234,19 +274,29 @@ actor MeasurementProcessor {
         // format is constrained, lenient numeric extraction when it is not
         // (spec Mode 2 vs Mode 3). `FormatValidator.value(from:format:)`
         // dispatches on `format.constrainToFormat`.
-        var chosen: (candidate: OCRCandidate, value: Double)?
+        // `reading(from:)` rather than `value(from:)`: the richer entry point
+        // returns the decimal analysis alongside the value, which is what makes
+        // decimal confidence fusible downstream. `value(from:)` discards it.
+        var chosen: (candidate: OCRCandidate, reading: NumericReading)?
+        var firstRejection: RejectionReason?
         for candidate in candidates {
-            if case .valid(let value) = FormatValidator.value(from: candidate.text, format: format) {
-                chosen = (candidate, value)
-                break
+            switch FormatValidator.reading(from: candidate.text, format: format) {
+            case .valid(let reading):
+                chosen = (candidate, reading)
+            case .invalid(let reason):
+                if firstRejection == nil { firstRejection = reason }
             }
+            if chosen != nil { break }
         }
 
         let display = chosen?.candidate ?? top
         let debug = debugString(text: display.text, unit: format.unit, confidence: display.confidence)
 
         guard let chosen else {
-            return .invalidFormat(rawText: top.text, digitConfidences: nil, debug: debug)
+            return .invalidFormat(rawText: top.text,
+                                  digitConfidences: nil,
+                                  reason: firstRejection ?? .invalidFormat,
+                                  debug: debug)
         }
 
         // Classical seven-segment cross-check — an independent, ML-free reader of
@@ -258,12 +308,14 @@ actor MeasurementProcessor {
             ? samplerCrossCheck(config: config, frame: frame)
             : .abstained
 
-        return .parsed(value: chosen.value,
+        return .parsed(value: chosen.reading.value,
                        ocrConfidence: chosen.candidate.confidence,
                        rawText: chosen.candidate.text,
                        digitConfidences: nil,
                        boundingBox: chosen.candidate.boundingBox,
                        samplerCrossCheck: crossCheck,
+                       decimal: chosen.reading.decimal,
+                       displayText: chosen.reading.text,
                        debug: debug)
     }
 
@@ -296,9 +348,14 @@ actor MeasurementProcessor {
         // Route the reconstructed string through the same mode dispatcher as the
         // whole-ROI path. The digit path is crop-based with no text localization,
         // so it carries no bounding box for ROI tracking.
-        guard case .valid(let value) = FormatValidator.value(from: text, format: format) else {
-            return .invalidFormat(rawText: text, digitConfidences: confidences, debug: debug)
+        let digitReading = FormatValidator.reading(from: text, format: format)
+        guard case .valid(let reading) = digitReading else {
+            let reason: RejectionReason
+            if case .invalid(let r) = digitReading { reason = r } else { reason = .invalidFormat }
+            return .invalidFormat(rawText: text, digitConfidences: confidences,
+                                  reason: reason, debug: debug)
         }
+        let value = reading.value
         // This path already consumed the digit cells the sampler would read;
         // cross-checking it against itself would be circular, so it abstains.
         return .parsed(value: value,
@@ -307,6 +364,8 @@ actor MeasurementProcessor {
                        digitConfidences: confidences,
                        boundingBox: nil,
                        samplerCrossCheck: .abstained,
+                       decimal: reading.decimal,
+                       displayText: reading.text,
                        debug: debug)
     }
 
@@ -326,12 +385,12 @@ actor MeasurementProcessor {
                               unit: format.unit, rawText: rawText,
                               digitConfidences: digitConfidences),
                     debug, nil)
-        case .invalidFormat(let rawText, let digitConfidences, let debug):
-            return (.rejected(timestamp: timestamp, reason: .invalidFormat,
+        case .invalidFormat(let rawText, let digitConfidences, let reason, let debug):
+            return (.rejected(timestamp: timestamp, reason: reason,
                               unit: format.unit, rawText: rawText,
                               digitConfidences: digitConfidences),
                     debug, nil)
-        case .parsed(let value, let ocrConfidence, let rawText, let digitConfidences, let boundingBox, let samplerCrossCheck, let debug):
+        case .parsed(let value, let ocrConfidence, let rawText, let digitConfidences, let boundingBox, let samplerCrossCheck, let decimal, let displayText, let debug):
             let crossCheck = Self.crossCheckOutcome(samplerCrossCheck, ocrValue: value, format: format)
             let measurement = finalize(value: value,
                                        ocrConfidence: ocrConfidence,
@@ -340,7 +399,9 @@ actor MeasurementProcessor {
                                        deviceID: config.id,
                                        timestamp: timestamp,
                                        digitConfidences: digitConfidences,
-                                       crossCheck: crossCheck)
+                                       crossCheck: crossCheck,
+                                       decimal: decimal,
+                                       displayText: displayText)
             return (measurement, debug, boundingBox)
         }
     }
@@ -355,12 +416,14 @@ actor MeasurementProcessor {
                           deviceID: UUID,
                           timestamp: TimeInterval,
                           digitConfidences: [Float]?,
-                          crossCheck: CrossCheckOutcome) -> Measurement {
+                          crossCheck: CrossCheckOutcome,
+                          decimal: DecimalAnalysis?,
+                          displayText: String?) -> Measurement {
         let physicalRejection = physicalValidators[deviceID]?.validate(value: value, timestamp: timestamp)
         let temporal = temporalFilters[deviceID]?.evaluate(value: value)
             ?? TemporalFilter.Evaluation(consistency: 1, rejected: false)
 
-        let measurement = confidenceEngine.fuse(timestamp: timestamp,
+        var measurement = confidenceEngine.fuse(timestamp: timestamp,
                                                 value: value,
                                                 unit: format.unit,
                                                 rawText: rawText,
@@ -370,7 +433,65 @@ actor MeasurementProcessor {
                                                 temporalConsistency: temporal.consistency,
                                                 temporalRejected: temporal.rejected,
                                                 crossCheck: crossCheck,
-                                                digitConfidences: digitConfidences)
+                                                digitConfidences: digitConfidences,
+                                                decimal: decimal,
+                                                displayText: displayText)
+
+        // TemporalConsensus gates the PUBLISHED reading (its header's own
+        // contract; `TemporalFilter` already fed the confidence product above).
+        // Only fuse-ACCEPTED readings are admitted as evidence — frames the
+        // other gates rejected must not build support for a form — and a frame
+        // the window does not support is demoted to a rejected measurement:
+        // the anti 808↔80.8 flip-flop rule, where publishing this frame's form
+        // would be a silent order-of-magnitude coin flip.
+        if measurement.accepted {
+            let text = displayText ?? rawText ?? DisplayFormat.naturalString(value)
+            var deviceConsensus = consensus[deviceID] ?? TemporalConsensus()
+            let outcome = deviceConsensus.observe(value: value,
+                                                  text: text,
+                                                  decimalConfidence: decimal?.confidence ?? 1,
+                                                  digitConfidence: ocrConfidence,
+                                                  formatPrior: nil,
+                                                  timestamp: timestamp)
+            consensus[deviceID] = deviceConsensus
+
+            switch outcome {
+            case .ambiguous:
+                // The window is genuinely split (e.g. 808 vs 80.8 with
+                // comparable support) — publishing either side would be a coin
+                // flip on an order of magnitude.
+                measurement = .rejected(timestamp: timestamp,
+                                        reason: .ambiguousDecimal,
+                                        value: value,
+                                        unit: format.unit,
+                                        confidence: measurement.confidence,
+                                        rawText: rawText,
+                                        digitConfidences: digitConfidences,
+                                        decimal: decimal,
+                                        displayText: displayText)
+            case .stable(let anchorValue, let anchorText, _),
+                 .changing(let anchorValue, let anchorText, _):
+                if anchorText != text {
+                    // The anchor was HELD against this frame: the window still
+                    // supports a different written form, so this frame's form
+                    // is not publishable yet. A power-of-ten neighbour is a
+                    // decimal event; anything else is temporal disagreement.
+                    let isDecimalEvent = TemporalConsensus.decimalShiftExponent(
+                        from: anchorValue, text: anchorText,
+                        to: value, text: text) != nil
+                    measurement = .rejected(timestamp: timestamp,
+                                            reason: isDecimalEvent ? .ambiguousDecimal
+                                                                   : .temporalInconsistency,
+                                            value: value,
+                                            unit: format.unit,
+                                            confidence: measurement.confidence,
+                                            rawText: rawText,
+                                            digitConfidences: digitConfidences,
+                                            decimal: decimal,
+                                            displayText: displayText)
+                }
+            }
+        }
 
         if measurement.accepted {
             physicalValidators[deviceID]?.recordAccepted(value: value, timestamp: timestamp)

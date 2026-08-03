@@ -32,17 +32,26 @@ enum CSVExporter {
         return url
     }
 
-    // MARK: Single-device schema — `timestamp,value,unit,confidence,accepted,rejection_reason`
+    // MARK: Single-device schema — `timestamp,value,unit,confidence,accepted,rejection_reason,raw_text`
 
+    /// `raw_text` is the string OCR actually produced, before parsing.
+    ///
+    /// It is the single most diagnostic column for field validation: when an
+    /// exported value is wrong, it separates "the recognizer misread the
+    /// display" from "the recognizer read it correctly and the parser lost it".
+    /// For the decimal failure this project exists to prevent, those two have
+    /// identical exported values (`808`) and completely different fixes — the
+    /// raw text is what tells them apart. Always quoted, since recognized text
+    /// can legitimately contain a comma.
     private static func singleDeviceCSV(session: CompletedSession, device: Device) -> String {
-        var lines = ["timestamp,value,unit,confidence,accepted,rejection_reason"]
+        var lines = ["timestamp,value,unit,confidence,accepted,rejection_reason,raw_text"]
         for sample in session.samples {
             let time = formatSeconds(session.relativeTime(sample.timestamp))
             guard let reading = sample.readings[device.id] else {
                 // No candidate produced for this device on this frame (e.g. ROI
                 // was cleared mid-recording) — log the row as unaccepted rather
                 // than silently dropping it.
-                lines.append("\(time),,,,false,")
+                lines.append("\(time),,,,false,,")
                 continue
             }
             let value = formatValue(reading.value, format: device.displayFormat)
@@ -50,9 +59,21 @@ enum CSVExporter {
             let confidence = formatConfidence(reading.confidence)
             let accepted = reading.accepted ? "true" : "false"
             let reason = reading.rejectionReason?.rawValue ?? ""
-            lines.append("\(time),\(value),\(unit),\(confidence),\(accepted),\(reason)")
+            let raw = quotedCSVField(reading.rawText)
+            lines.append("\(time),\(value),\(unit),\(confidence),\(accepted),\(reason),\(raw)")
         }
         return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// CSV-safe rendering of recognized text: always quoted, inner quotes
+    /// doubled, newlines flattened. OCR output is untrusted text that regularly
+    /// contains commas (a grouped `1,234`), so an unquoted column would corrupt
+    /// the row exactly when the reading is most interesting.
+    static func quotedCSVField(_ text: String?) -> String {
+        guard let text, !text.isEmpty else { return "" }
+        let flattened = text.replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+        return "\"" + flattened.replacingOccurrences(of: "\"", with: "\"\"") + "\""
     }
 
     // MARK: Multi-device schema — one `<prefix>_value_<unit>,<prefix>_confidence,<prefix>_valid` set per device

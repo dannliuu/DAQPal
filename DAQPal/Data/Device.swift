@@ -18,7 +18,19 @@ struct Device: Identifiable, Codable, Equatable, Hashable, Sendable {
     var displayFormat: DisplayFormat
     /// Confirmed ROI in normalized oriented-image space; nil until the user
     /// places the window.
+    ///
+    /// For a SUB-FIELD device (`origin != nil`) this is derived, not authored:
+    /// it is recomputed from `origin` every time the parent window moves. Never
+    /// assign it directly on such a device — the next recomposition overwrites it.
     var roi: NormalizedROI?
+
+    /// Set when this device is one number carved out of another device's
+    /// window (`WindowSubField.swift`). nil for an ordinary device, which is
+    /// also what distinguishes a parent window from its children.
+    var origin: SubFieldOrigin? = nil
+
+    /// A sub-field device reads one number inside a parent's window.
+    var isSubField: Bool { origin != nil }
 
     var unit: String? { displayFormat.unit }
 
