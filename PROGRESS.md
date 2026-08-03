@@ -24,13 +24,14 @@ real-DMM OCR accuracy on physical hardware.
 | Verification gate | Status |
 |---|---|
 | Integration build (`xcodebuild`) | ✅ succeeded (2026-07-27, iPhone 17 Pro simulator destination, zero compile errors) |
-| Unit tests on Simulator | ✅ **420 effective passes, 0 real failures, 2 skipped** (2026-07-27). The 2 skips are the fixture-harness tests, which by design skip until a real `dmm_001.mov` DMM fixture is recorded — no fabricated accuracy. One test reds under parallel clones (`VideoImportTests.testEndToEnd_slowMotionFixture…`, AVAssetWriter/VideoToolbox contention) and passes on serial retry — documented retry-first policy |
+| Unit tests on Simulator | ✅ **616 passed, 0 failed, 2 skipped** (2026-08-02, post drift-remediation, run serially in chunks by device UDID). The 2 skips are the fixture-harness tests, by design until a real `dmm_001.mov` is recorded. Benchmarks (`OCRBenchmarkTests`, `DecimalBenchmarkTests`) and `DAQPalUITests` excluded — run on demand |
 | End-to-end pipeline (no camera) | ✅ `SyntheticPipelineTests` — rendered frame → Vision OCR → format/physical/temporal validation → accepted at the rendered value; garbage frame never accepted |
 | Video import incl. slow-mo normalization | ✅ `VideoImportTests` — H.264 fixture encoded in-test → decode → ½× time normalization → recognized and accepted at the rendered value with the halved timeline |
 | App launch + UI walkthrough on Simulator | ✅ capture (ROI lock, live reading, recording strip) + recorded-session results verified via debug-launch-argument screenshots (2026-07-23); import flow walkthrough pending |
 | Selection-window lag root cause + fix | ✅ diagnosed and **regression-tested at the mechanism level** (`CapturePerformanceTests`, 10/10) — see `ARCHITECTURE.md` §2–§3. No FPS/CPU figure is claimed: the diagnosis was observation-graph analysis, not an Instruments profile |
 | Dynamic motion / tracking stress rig | ✅ 9 modes (steady, yaw, pitch, roll, tumble, bounce, scale, driftDiagonal, stress) + opt-in deterministic optics degradation; visually verified in Simulator, 12 unit tests |
-| Intelligent screen-locking layer | ⚠️ **built and unit-tested, NOT wired to the app** — grep-verified to have no in-app caller; has never run against a live frame stream. 6 known open defects tabulated in `ARCHITECTURE.md` §9 |
+| Intelligent screen-locking layer | ✅ **wired (Gate 14) and exercised in a live Simulator run** — detection → snap → LOCKED → tracking → canonical warp → field analysis → selection → value read through tracked geometry (FIELD 1 = 12.574 @ 68.1%). See `ARCHITECTURE.md` §9 |
+| Tracking under fast motion | ⛔ **BLOCKING correctness failure** — the tracker drifts off-target while still reporting healthy confidence, so the UI shows `LOCKED` with a stale value over empty background. Steady-state capture is correct. Details and suspected causes in `ARCHITECTURE.md` §9 |
 | Camera / real-DMM validation on physical iPhone | ⬜ requires physical hardware (cannot be done in Simulator) |
 
 ---
