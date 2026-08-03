@@ -98,7 +98,12 @@ Settled decisions. To change one: add a `PROPOSED:` row beneath it with your evi
 *Supersedes the earlier "857 passed / 864 cases `[sim iPhone 16 Pro]`" figure, for two reasons and neither is a regression: (a) the iPhone 16 Pro simulator no longer exists on the dev machine, so the run moved to iPhone 16e; (b) the 857 figure was obtained by grepping stdout, and that log **double-prints** its per-case lines — which is precisely why §2 rule 4 now forbids stdout grepping and mandates `xcresulttool`. The failing set is byte-identical across both runs.* Failures: 4× `SegmentCellScannerTests` (`:87` nil decimal positions for DSEG7 "0.001"/"99.9"/"100.0"; `:131` wrong position on inverted preset; `:173` "99.9" reconstructed as "000"; `:200` proportional-face wrong position) → WS-B B4; 1× `DragLatencyUITests.swift:82` (5 gesture callbacks where >10 expected — matches the documented simulator-only starvation pattern) → WS-A triage. The 2 skips are the known `RecognitionPipelineTests` fixture skips. Historical counts — 733/0/2 (VALIDATION_FRAMEWORK.md), 113/116/616 (PROGRESS.md) — are superseded; do not cite.
 
 ### Built and wired (trust it)
-- Full capture→OCR→validation→CSV pipeline; `ScreenLockPipeline` actor wired inline in `FrameProcessor` drain (6 stages incl. `AppearanceSentinel` 1b, `TrackVerifier` 2b).
+
+> ⚠️ **"Wired" ≠ "running". Read defect 12 before trusting anything in this section as a description of what a user
+> experiences.** Two of the biggest subsystems below are wired but **OFF BY DEFAULT**, so the shipping path a user
+> actually exercises is much thinner than this list implies.
+
+- Full capture→OCR→validation→CSV pipeline; `ScreenLockPipeline` actor wired inline in `FrameProcessor` drain (6 stages incl. `AppearanceSentinel` 1b, `TrackVerifier` 2b) — **but disabled by default, see defect 12**.
 - Transit veto: 0 LOCKED-while-unverified across 81-pass bounce trace `[sim rig]`.
 - Invalidation storm fixed: 60 unchanged frames → 0 UI invalidations (`CapturePerformanceTests` 10/10).
 - Sub-field selection (`NumberBandSplitter` → `WindowFieldAnalyzer` → `WindowSubFieldLayer`); analyzer 6.5ms/analysis `[host? Release]`.
@@ -126,6 +131,33 @@ Settled decisions. To change one: add a `PROPOSED:` row beneath it with your evi
 7. ~~`SegmentCellScanner` decimal-position/reconstruction logic bugs — 4 failing tests~~ — **CLOSED 2026-08-03 (B0)**. Root cause was the row-band splitter (`:247-264`): an intra-glyph trough is indistinguishable from an inter-line gap, so one digit line was cut into two bands. Fixed by keeping the projection as a *seed-window* finder and merging over-split bands by run geometry. Note the audit's original prescription — "delete the row-projection pass, column-scan the whole crop" — was **measured to be wrong**: on `Fixtures/ir_gun_display.png` it collapses to one run covering the whole image, destroying the `90.0` reading that works today.
 
 10. **NEW — `SegmentCellScanner`'s safety property is FALSE, and was already false at HEAD.** Measured 2026-08-03 by a 600-case both-version differential (30 literals × 4 glyph styles × 5 presets, both scanners on byte-identical buffers): **HEAD reports 38 wrong decimal positions out of 600**; the current tree reports 13. Not only under degradation — `sans/clean "1234"` (no decimal point, undegraded) reports position 1 because a glyph baseline serif scores as the separator. The guarding test (`testNeverReportsAWrongPositionAcrossPresets`) covers only 4 seven-segment literals and structurally cannot observe any of it. A wrong position is a silent factor-of-ten error in exported data. **This is larger than B0 and needs its own task.** Two specific regressions remain unfixed and report a position where HEAD refused: `333.3`/moderate-inverted (the crop-edge filter removes a border run, clearing `.fragmented` while a spurious run remains) and `9.99`/fourteenSegment/moderate-inverted (merge accepts against an already-inflated reference count). Evidence is synthetic only. → WS-B, new task
+
+12. **THE DEFAULT CONFIGURATION EXPLAINS THE TWO FIELD COMPLAINTS — traced 2026-08-03 from Daniel's on-device use.**
+Reported: *"the window is poor at moving if the device is moving"* and *"decimal detection is still inaccurate."* Neither
+is an algorithm-quality problem. Both are the shipping defaults:
+
+   **(a) The ROI does not track, because tracking is off.** `AppState.screenLockEnabled = false` (`:96`) and
+   `ScreenLockPipeline.isEnabled = false` (`:126`). With it off, `process` returns an empty `ScreenLockUpdate` (`:237`), so
+   `roiOverrides: lock.fieldROIs` (`FrameProcessor.swift:100`) is empty and the device keeps the ROI the user drew, fixed in
+   normalized frame coordinates. **There is no second tracking path** — grep confirms nothing else updates it. So the window
+   does not track *poorly* under motion; it does not track *at all*. `VisionScreenTracker`, `TrackVerifier`,
+   `AppearanceSentinel`, `PoseTrajectory` and `PerspectiveNormalizer` are all outside the path being used.
+   Reachable today: the lock toggle in `CaptureHeaderView.swift:151`, or launch arg `-daqpal-screen-lock`.
+
+   **(b) The production decimal path is OCR-only.** The default device is `DisplayFormat.unconstrained`
+   (`Device.swift:47`) with `constrainToFormat = false` (`DisplayFormat.swift:46`), and
+   `MeasurementProcessor.swift:307` gates the seven-segment cross-check on that flag. So by default the chain is
+   **Vision OCR → FormatValidator → ConfidenceEngine**, with NO segment analysis at all. Every decimal-specific component is
+   out: `SegmentCellScanner` 0 production refs, `DisplayFormatInference` 0, `DecimalRescue` comments only. And when the
+   cross-check *is* switched on, it runs through `DigitSegmenter` — a file whose own header calls it a **"Naive fixed-pitch
+   digit segmentation STUB"** that assumes equal-width full-height cells and states that real display geometry "replaces
+   this". Reachable today: the format sheet (`FormatConfigurationSheet.swift:243`).
+
+   **Plan gap this exposes:** §5 previously listed the pipeline under "Built and wired (trust it)" without noting the
+   default, and no task anywhere says "turn it on." The orphan list and B1–B4 describe the *code* state correctly but were
+   never connected to what a user sees. Note also that enabling the lock is necessary but not sufficient: A7 records only
+   **8 LOCKED + 6 DEGRADED of 81 bounce passes (67 REACQUIRING)**, so hold-rate under motion is independently poor and is
+   A7's job. → WS-A (default + A7), WS-B (B4 wiring), WS-D (make the state legible)
 
 11. **REVERTED, do not re-attempt without a differential** — a peel-provenance filter (prefer native separator runs over peeled ones) recovered the proportional-face dot but converted **7 of HEAD's refusals into wrong positions**. Reproducible on `sevenSegment/hard "000"`: two candidates, filter drops the peeled one, `separatorCount` 2→1, phantom decimal on an integer reading. Structural, not tuning: provenance is evidence about *segmentation*, and whether the true dot fuses is a property of the optics, so nativeness systematically selects an impostor when any other baseline-hugging mark survives. Reasoning is recorded in the peel-policy comment in `SegmentCellScanner.swift`.
 8. `TemporalConsensus`: anchor forms from only 2 uncorroborated frames; `.ambiguous` can deadlock indefinitely; decimal-comma unhandled. → B6
