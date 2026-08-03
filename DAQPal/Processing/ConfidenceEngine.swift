@@ -70,9 +70,7 @@ struct ConfidenceEngine {
     /// stable. A policy threshold, not a measured one.
     static let decimalVetoThreshold: Float = 0.5
 
-    /// The lowest product the gates above can legitimately yield, and therefore
-    /// the level below which the fused confidence PROVES that some factor was
-    /// applied without being gated.
+    /// The infimum of the product the gates above can legitimately yield.
     ///
     /// Derived, never chosen. Every accepted reading satisfies, per gate:
     ///
@@ -82,24 +80,70 @@ struct ConfidenceEngine {
     ///     decimal           >= decimalVetoThreshold          0.50
     ///     crossCheck         > 1 − crossCheckVetoThreshold   0.50  (strict)
     ///
-    /// so the infimum of the legitimate product is their product, 0.0375, and it
-    /// is OPEN (unattained) at the cross-check end. A reading at or above it may
-    /// still be poor. A reading BELOW it is impossible unless a factor bypassed
-    /// its own gate.
-    ///
     /// The temporal line holds only because `TemporalFilter` reports 1.0 while
-    /// its window is not yet full (`TemporalFilter.consistency(of:)`) — this
-    /// floor is INVALID without that contract, which is why the reference below
-    /// is written against `TemporalFilter.consistencyThreshold` rather than a
-    /// local copy.
+    /// its window is not yet full (`TemporalFilter.consistency(of:)`); the
+    /// reference below is written against `TemporalFilter.consistencyThreshold`
+    /// rather than a local copy so that contract cannot silently decouple.
     ///
-    /// Written as the arithmetic rather than the number so that moving any
-    /// constant above moves this with it; a literal would silently decouple.
-    static let minimumFusedConfidence: Float =
+    /// THIS IS NOT THE ACCEPT/REJECT FLOOR. Because it is the infimum of the
+    /// gate-permitted region, every gate-passing reading is >= it BY
+    /// CONSTRUCTION, so gating on it would be a tautology that refuses nothing.
+    /// It is kept only to prove, in `minimumFusedConfidence` below, that the
+    /// shipped floor is a real constraint and not a no-op.
+    static let gatePermittedInfimum: Float =
         lowOCRConfidenceThreshold
         * TemporalFilter.consistencyThreshold
         * decimalVetoThreshold
         * (1 - crossCheckVetoThreshold)          // == 0.0375
+
+    /// A reading must retain at least this share of its nominal confidence after
+    /// every quality factor has been applied, or it is refused as
+    /// `.lowFusedConfidence`.
+    ///
+    /// A POLICY THRESHOLD, NOT A DERIVED ONE — the same kind of decision as
+    /// `lowOCRConfidenceThreshold` and `decimalVetoThreshold` above, and it is
+    /// stated here rather than computed because nothing in the arithmetic
+    /// implies it. Deriving a floor was tried and rejected: the derived value is
+    /// `gatePermittedInfimum`, which by construction cannot refuse anything.
+    ///
+    /// WHY 0.15 — it is the product of the OCR gate minimum and ONE other gate
+    /// minimum (0.30 × 0.50), so the rule it expresses is:
+    ///
+    ///     two gates sitting at their minimum is the BOUNDARY and is accepted;
+    ///     anything degraded further than that is refused, because the reading
+    ///     is then being held up by nothing.
+    ///
+    /// The documented leak this closes: ocr 0.35 × decimal 0.50 × cross-check
+    /// 0.51 = 0.0892 — three simultaneous warnings, previously ACCEPTED because
+    /// each factor passed its own gate in isolation and nothing ever judged the
+    /// product. Refused now, with ~1.7× margin. Ties go to acceptance (`<`, not
+    /// `<=`), matching the convention of every other gate in this file.
+    ///
+    /// WHY NOT HIGHER. 0.25 was tried first ("no two gates simultaneously at
+    /// minimum"). Measured over the 360-combination gate-permitted sweep in
+    /// `ConfidenceEngineTests`, it refuses 49.7% versus 22.8% here — and it cuts
+    /// into a mid-range for which NO real-instrument data exists. The two errors
+    /// are not symmetric in the way a first pass suggests: every exported row
+    /// carries its `confidence` column, so a floor set slightly LOW stays
+    /// recoverable — an analyst can filter — whereas a floor set too HIGH
+    /// destroys data that was never captured at all. The usual "over-refusal is
+    /// loud and self-correcting" argument also does not apply yet, because with
+    /// no recorded fixtures nobody would notice over-refusal until a device day.
+    /// So: close the pathological case with margin, leave the undermeasured
+    /// middle alone, and revise UPWARD once DoD-2's fixtures exist. Up is the
+    /// safe direction to defer.
+    ///
+    /// WHAT IT DOES NOT DO. This is not the main defence against
+    /// wrong-and-accepted, and must not be described as one. The measured `.5`
+    /// power-of-ten failures on the device benchmark carried 0.75 confidence —
+    /// far above any sane floor. Wrong readings can be confident. A floor only
+    /// catches readings whose own signals already admit doubt; B3 addresses the
+    /// confident-and-wrong class, and it is the more important task.
+    ///
+    /// PROVISIONAL. Re-tune against DoD-2's real fixtures when they exist, and
+    /// record the refusal rate alongside accuracy — never accuracy alone, or a
+    /// floor that quietly refuses everything will read as an accuracy win.
+    static let minimumFusedConfidence: Float = 0.15
 
     /// Fuses the per-source signals for one candidate reading into a final
     /// `Measurement`.
