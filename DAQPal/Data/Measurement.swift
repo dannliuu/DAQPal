@@ -8,6 +8,19 @@ import Foundation
 /// Why a candidate reading was rejected by the validation pipeline (spec §18).
 enum RejectionReason: String, Codable, Sendable, CaseIterable {
     case lowOCRConfidence = "LOW_OCR_CONFIDENCE"
+    /// Every gate passed on its OWN factor, but their PRODUCT collapsed below
+    /// what those gates can legitimately produce
+    /// (`ConfidenceEngine.minimumFusedConfidence`). Deliberately distinct from
+    /// `.lowOCRConfidence`, which asserts a specific measured fact — that the
+    /// raw text was untrustworthy — and that claim is provably FALSE here, since
+    /// this reason is unreachable unless the OCR gate already passed. Reusing it
+    /// would put a fabricated cause in the audit column of the exported row.
+    /// Structurally this is an invariant violation: some factor was applied
+    /// without being gated. Emitted so the failure is visible in the record
+    /// instead of being laundered as an OCR problem — the remedy for
+    /// LOW_OCR_CONFIDENCE is the operator's (light, focus, ROI); the remedy for
+    /// this is the developer's.
+    case lowFusedConfidence = "LOW_FUSED_CONFIDENCE"
     case invalidFormat = "INVALID_FORMAT"
     case outOfRange = "OUT_OF_RANGE"
     case temporalInconsistency = "TEMPORAL_INCONSISTENCY"
@@ -35,6 +48,7 @@ enum RejectionReason: String, Codable, Sendable, CaseIterable {
     var displayLabel: String {
         switch self {
         case .lowOCRConfidence: "LOW CONFIDENCE"
+        case .lowFusedConfidence: "LOW FUSED CONFIDENCE"
         case .invalidFormat: "FORMAT MISMATCH"
         case .outOfRange: "OUT OF RANGE"
         case .temporalInconsistency: "TEMPORAL INCONSISTENCY"

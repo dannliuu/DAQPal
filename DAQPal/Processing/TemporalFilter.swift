@@ -79,8 +79,21 @@ final class TemporalFilter {
     /// display-resolution floor and the window's own recent volatility. Sign
     /// flips and range jumps beyond the allowance score ~0 and are additionally
     /// caught by `PhysicalValidator`'s rate/range checks.
+    ///
+    /// The window-size guard is the SCORE's half of the contract documented on
+    /// `Evaluation.consistency` ("1.0 while the window is too small to judge"):
+    /// the score's domain of validity must equal the domain in which `rejected`
+    /// can fire (`windowFull`, `evaluate` above). While the window is short,
+    /// this filter has not judged the reading, and a factor that has not judged
+    /// must not depress the fused product — a partial window's median is one or
+    /// two samples old, so any genuine step larger than the resolution floor
+    /// scores ~0 while `rejected` stays false. That combination hands
+    /// `ConfidenceEngine` a factor below the level its own gate polices, which
+    /// is what `ConfidenceEngine.minimumFusedConfidence` exists to detect;
+    /// reporting a live score here would make correct start-up readings
+    /// indistinguishable from a fusion defect.
     private func consistency(of value: Double) -> Float {
-        guard value.isFinite, !window.isEmpty else { return 1.0 }
+        guard value.isFinite, window.count >= Self.windowSize else { return 1.0 }
         let median = window.sorted()[window.count / 2]
         let step = pow(10.0, -Double(format.fractionDigits))
         var volatility = 0.0

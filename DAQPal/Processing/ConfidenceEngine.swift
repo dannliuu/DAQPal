@@ -70,6 +70,37 @@ struct ConfidenceEngine {
     /// stable. A policy threshold, not a measured one.
     static let decimalVetoThreshold: Float = 0.5
 
+    /// The lowest product the gates above can legitimately yield, and therefore
+    /// the level below which the fused confidence PROVES that some factor was
+    /// applied without being gated.
+    ///
+    /// Derived, never chosen. Every accepted reading satisfies, per gate:
+    ///
+    ///     format, physical  == 1                                  (hard {0,1} gates)
+    ///     ocr               >= lowOCRConfidenceThreshold    0.30
+    ///     temporal          >= TemporalFilter.consistencyThreshold 0.50
+    ///     decimal           >= decimalVetoThreshold          0.50
+    ///     crossCheck         > 1 − crossCheckVetoThreshold   0.50  (strict)
+    ///
+    /// so the infimum of the legitimate product is their product, 0.0375, and it
+    /// is OPEN (unattained) at the cross-check end. A reading at or above it may
+    /// still be poor. A reading BELOW it is impossible unless a factor bypassed
+    /// its own gate.
+    ///
+    /// The temporal line holds only because `TemporalFilter` reports 1.0 while
+    /// its window is not yet full (`TemporalFilter.consistency(of:)`) — this
+    /// floor is INVALID without that contract, which is why the reference below
+    /// is written against `TemporalFilter.consistencyThreshold` rather than a
+    /// local copy.
+    ///
+    /// Written as the arithmetic rather than the number so that moving any
+    /// constant above moves this with it; a literal would silently decouple.
+    static let minimumFusedConfidence: Float =
+        lowOCRConfidenceThreshold
+        * TemporalFilter.consistencyThreshold
+        * decimalVetoThreshold
+        * (1 - crossCheckVetoThreshold)          // == 0.0375
+
     /// Fuses the per-source signals for one candidate reading into a final
     /// `Measurement`.
     ///
@@ -89,9 +120,12 @@ struct ConfidenceEngine {
     ///   - displayText: the reading as written, trailing zeros preserved.
     ///
     /// Rejection precedence (first failing gate names the reason): format →
-    /// low OCR → decimal → physical (range/rate) → temporal → cross-check. The
-    /// decimal and cross-check factors can only DEPRESS the fused confidence —
-    /// so `final ≤ ocrConfidence` still holds always.
+    /// low OCR → decimal → physical (range/rate) → temporal → cross-check →
+    /// fused floor. The decimal and cross-check factors can only DEPRESS the
+    /// fused confidence — so `final ≤ ocrConfidence` still holds always. The
+    /// fused floor is last and lowest-priority by design: it judges the PRODUCT
+    /// once every factor has been applied, and only when no earlier gate named
+    /// a reason (see `minimumFusedConfidence`).
     func fuse(timestamp: TimeInterval,
               value: Double,
               unit: String?,
@@ -142,6 +176,27 @@ struct ConfidenceEngine {
             if c >= Self.crossCheckVetoThreshold {
                 reason = .ambiguousDigit
             }
+        }
+
+        // The fused floor: the LAST word on the product, after every factor has
+        // been applied. The ladder above judges each factor in ISOLATION, and the
+        // cross-check then multiplies the product a second time with nothing
+        // re-gating it — nothing before this point ever looks at
+        // `finalConfidence` itself. This does.
+        //
+        // It is an invariant assertion, not a policy knob: by construction it can
+        // only fire when a factor escaped its own gate, so a firing is a BUG
+        // REPORT about the fusion inputs, not a marginal reading. Placement after
+        // the cross-check block is the whole point; moved above it, the last
+        // multiply would again go unchecked.
+        //
+        // `reason == nil` preserves rejection precedence — the floor never
+        // relabels a more specific verdict. It sets the verdict ONLY:
+        // `finalConfidence` is left exactly as computed, because the confidence
+        // is the evidence for the refusal and must survive into the exported row
+        // (rejected readings are logged, never dropped).
+        if reason == nil, finalConfidence < Self.minimumFusedConfidence {
+            reason = .lowFusedConfidence
         }
 
         return Measurement(timestamp: timestamp,
