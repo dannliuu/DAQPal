@@ -1,0 +1,11 @@
+# DAQPal regression baseline. Generated — do not hand-edit.
+# Re-record with: DAQPAL_RECORD_BASELINE=<name> (see BaselineRecording).
+format: 1
+name: selftest-fixture
+cases: 200
+exactRate: 0.987000
+digitAccuracy: 0.994000
+decimalAccuracy: 0.968000
+detectionRate: 1.000000
+meanIoU: 0.912000
+p95LatencyMS: 41.200

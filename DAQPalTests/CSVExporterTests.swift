@@ -37,10 +37,10 @@ final class CSVExporterTests: XCTestCase {
                                        firstTimestamp: 100.0, lastTimestamp: 101.0)
 
         let expected = """
-        timestamp,value,unit,confidence,accepted,rejection_reason
-        0.000,12.347,V,0.913,true,
-        0.500,,V,0.000,false,OUT_OF_RANGE
-        1.000,,,,false,
+        timestamp,value,unit,confidence,accepted,rejection_reason,raw_text
+        0.000,12.347,V,0.913,true,,
+        0.500,,V,0.000,false,OUT_OF_RANGE,
+        1.000,,,,false,,
 
         """
         XCTAssertEqual(CSVExporter.csvString(for: session), expected)
@@ -75,13 +75,31 @@ final class CSVExporterTests: XCTestCase {
                                        samples: [RecordingSample(timestamp: 0, readings: [device.id: accepted])],
                                        firstTimestamp: 0, lastTimestamp: 0)
         let lines = CSVExporter.csvString(for: session).split(separator: "\n")
-        XCTAssertEqual(String(lines[0]), "timestamp,value,unit,confidence,accepted,rejection_reason")
+        XCTAssertEqual(String(lines[0]), "timestamp,value,unit,confidence,accepted,rejection_reason,raw_text")
         let fields = lines[1].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
         // timestamp,value,unit,confidence,accepted,rejection_reason
         XCTAssertEqual(fields[2], "", "dimensionless device writes an empty unit field")
         // Unconstrained devices export naturally (matches the on-screen value):
         // trailing zeros trimmed, so 12.3 is "12.3", not the seed 5/2 "12.300".
         XCTAssertEqual(fields[1], "12.3")
+    }
+
+    func testSingleDevice_trackingInvalidRowCarriesReason() {
+        // WP-D: a field-backed device gated by invalid tracking emits a
+        // rejected `.trackingInvalid` measurement; the CSV row must carry the
+        // reason (logged, never dropped) with an empty value cell.
+        var device = Device.makeDefault(index: 1)
+        device.displayFormat = DisplayFormat(digitCount: 5, decimalPosition: 2,
+                                             signAllowed: true, unit: "V",
+                                             minimumValue: -20, maximumValue: 20)
+        let gated = Measurement.rejected(timestamp: 100.5, reason: .trackingInvalid, unit: "V")
+        let session = CompletedSession(id: UUID(), startedAt: Date(), endedAt: Date(),
+                                       devices: [device],
+                                       samples: [RecordingSample(timestamp: 100.5,
+                                                                 readings: [device.id: gated])],
+                                       firstTimestamp: 100.5, lastTimestamp: 100.5)
+        let lines = CSVExporter.csvString(for: session).split(separator: "\n")
+        XCTAssertEqual(String(lines[1]), "0.000,,V,0.000,false,TRACKING_INVALID,")
     }
 
     // MARK: - Multi-device schema
@@ -233,4 +251,58 @@ final class CSVExporterTests: XCTestCase {
         let written = try String(contentsOf: urlB, encoding: .utf8)
         XCTAssertEqual(written, CSVExporter.csvString(for: sessionB))
     }
+    // MARK: - raw_text (field-validation diagnostic)
+
+    /// The column that separates "the recognizer misread the display" from
+    /// "the recognizer read it correctly and the parser lost the decimal" —
+    /// two failures with an identical exported value and completely different
+    /// fixes.
+    func testSingleDevice_rawTextIsExported() {
+        let device = Device.makeDefault(index: 1)
+        let reading = Measurement(timestamp: 0, value: 808, unit: nil,
+                                  confidence: 0.9, accepted: true,
+                                  rawText: "80.8")
+        let session = CompletedSession(id: UUID(), startedAt: Date(), endedAt: Date(),
+                                       devices: [device],
+                                       samples: [RecordingSample(timestamp: 0, readings: [device.id: reading])],
+                                       firstTimestamp: 0, lastTimestamp: 0)
+        let lines = CSVExporter.csvString(for: session).split(separator: "\n")
+        XCTAssertTrue(String(lines[1]).hasSuffix("\"80.8\""),
+                      "raw_text must carry what OCR saw: \(lines[1])")
+    }
+
+    /// OCR output legitimately contains commas (a grouped `1,234`), which would
+    /// corrupt the row precisely when the reading is most interesting.
+    func testRawTextWithCommaIsQuotedAndDoesNotSplitTheRow() {
+        let device = Device.makeDefault(index: 1)
+        let reading = Measurement(timestamp: 0, value: 1234, unit: nil,
+                                  confidence: 0.8, accepted: false,
+                                  rejectionReason: .ambiguousDecimal,
+                                  rawText: "1,234")
+        let session = CompletedSession(id: UUID(), startedAt: Date(), endedAt: Date(),
+                                       devices: [device],
+                                       samples: [RecordingSample(timestamp: 0, readings: [device.id: reading])],
+                                       firstTimestamp: 0, lastTimestamp: 0)
+        let lines = CSVExporter.csvString(for: session).split(separator: "\n")
+        let header = String(lines[0]).split(separator: ",").count
+        XCTAssertTrue(String(lines[1]).contains("\"1,234\""), "comma-bearing raw text must be quoted")
+        // The quoted field keeps the row parseable: a naive split would show
+        // MORE fields than the header if quoting were missing.
+        XCTAssertEqual(String(lines[1]).split(separator: ",", omittingEmptySubsequences: false).count,
+                       header + 1,
+                       "exactly one extra split from the quoted comma — the field is quoted, not escaped away")
+    }
+
+    func testRawTextAbsentWritesEmptyField() {
+        let device = Device.makeDefault(index: 1)
+        let reading = Measurement(timestamp: 0, value: 12.3, unit: nil,
+                                  confidence: 0.9, accepted: true)
+        let session = CompletedSession(id: UUID(), startedAt: Date(), endedAt: Date(),
+                                       devices: [device],
+                                       samples: [RecordingSample(timestamp: 0, readings: [device.id: reading])],
+                                       firstTimestamp: 0, lastTimestamp: 0)
+        let lines = CSVExporter.csvString(for: session).split(separator: "\n")
+        XCTAssertTrue(String(lines[1]).hasSuffix(","), "absent raw text writes an empty field")
+    }
+
 }

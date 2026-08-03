@@ -203,10 +203,21 @@ final class FormatValidatorTests: XCTestCase {
         XCTAssertEqual(result?.matched, "-.5")
     }
 
-    func testExtract_picksTokenWithMostDigits() {
-        // "12.34.7" tokenizes into "12.34" (4 digits) and ".7" (1 digit);
-        // lenient mode tolerates the trailing junk and takes the richest token.
-        let result = FormatValidator.extractNumber(from: "12.34.7")
+    func testExtract_doubledSeparatorIsRejectedNotCoerced() {
+        // DELIBERATE BEHAVIOUR CHANGE (spec §11A / Gate 11A). This test
+        // previously asserted that "12.34.7" was COERCED to 12.34 by taking the
+        // "richest token". That is exactly the failure mode §11A forbids: a
+        // malformed decimal must never be silently reinterpreted as a
+        // well-formed one, because the result is numerically valid and wrong.
+        // `12.34.5` is listed verbatim in the spec's negative vectors as
+        // "must be rejected, not coerced". Rejecting loses one reading;
+        // coercing silently corrupts the recorded series.
+        XCTAssertNil(FormatValidator.extractNumber(from: "12.34.7"))
+    }
+
+    func testExtract_singleSeparatorStillExtractsNormally() {
+        // The rejection above must not have broken ordinary lenient extraction.
+        let result = FormatValidator.extractNumber(from: "AUTO 12.34 mV")
         XCTAssertEqual(result?.value, 12.34)
         XCTAssertEqual(result?.matched, "12.34")
     }
@@ -235,8 +246,43 @@ final class FormatValidatorTests: XCTestCase {
 
     func testDispatch_unconstrainedUsesLenientExtraction() {
         XCTAssertEqual(FormatValidator.value(from: "AUTO 12.3 mV", format: lenient), .valid(12.3))
-        // Trailing junk tolerated: best token of "12.34.7" is "12.34".
-        XCTAssertEqual(FormatValidator.value(from: "12.34.7", format: lenient), .valid(12.34))
+    }
+
+    func testDispatch_lenientRejectsMalformedDecimalRatherThanCoercing() {
+        // See `testExtract_doubledSeparatorIsRejectedNotCoerced`: lenient mode
+        // is lenient about SURROUNDING junk, never about the decimal itself.
+        //
+        // The reason is `.invalidFormat`, not `.ambiguousDecimal`, and the
+        // distinction is deliberate: "12.34.7" is structurally MALFORMED — no
+        // reading of it is well-formed — whereas `.ambiguousDecimal` means the
+        // digits are fine but the separator's presence or position cannot be
+        // determined ("12 345", or a grouped "12,345" with no declared format).
+        // Spec §11A requires these be rejected rather than coerced; it does not
+        // dictate which rejection reason, and conflating the two would make the
+        // ambiguity signal useless for diagnosing real decimal loss.
+        XCTAssertEqual(FormatValidator.value(from: "12.34.7", format: lenient),
+                       .invalid(.invalidFormat))
+    }
+
+    func testDispatch_lenientKeepsTwoSeparateReadingsOnOneLine() {
+        // Regression guard for the over-rejection introduced with the split
+        // detector: a whitespace gap only means "one number split in two" when
+        // NEITHER side kept a separator. Two well-formed decimals on one line
+        // are two readings, not one broken one, and must not be rejected —
+        // `ScreenCandidateDetector.numericScore` uses this same entry point as a
+        // display-detection heuristic, so rejecting here would make real
+        // multi-value instrument panels harder to detect as screens.
+        if case .invalid = FormatValidator.value(from: "12.3 45.6", format: lenient) {
+            XCTFail("A line carrying two well-formed decimals must not be rejected as ambiguous.")
+        }
+    }
+
+    func testDispatch_lenientStillRejectsAGenuineSplitReading() {
+        // The case the split detector exists for: two BARE digit runs separated
+        // by whitespace is the signature of a dropped separator ("12 345"), and
+        // picking either fragment would be an order-of-magnitude error.
+        XCTAssertEqual(FormatValidator.value(from: "12 345", format: lenient),
+                       .invalid(.ambiguousDecimal))
     }
 
     func testDispatch_unconstrainedNoDigitsIsInvalidFormat() {
