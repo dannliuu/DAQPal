@@ -11,7 +11,7 @@ This is the **coordination hub** for all plan-executing agents. Read this file f
 | Settled technical decisions | §3 Decision Registry (this file) |
 | Which legacy doc to trust for what | §6 Authority Map (this file) |
 | Who may edit which files | §7 Ownership Matrix (this file) |
-| Task definitions + evidence gates | The three `ws-*.md` files |
+| Task definitions + evidence gates | The five `ws-*.md` files |
 
 Workstream docs never restate status; legacy docs are **frozen read-only reference** (do not edit, do not delete). This rule exists because the legacy docs rotted exactly by duplicating status (three contradictory test counts inside PROGRESS.md; spec checkboxes open for shipped work).
 
@@ -19,16 +19,19 @@ Workstream docs never restate status; legacy docs are **frozen read-only referen
 
 ## 1. Mission and Definition of Done
 
-DAQPal points an iPhone camera at a lab instrument, locks onto its display, tracks it, OCRs the reading (including seven-segment faces), validates, and logs time-series CSV. "Works performantly" means all four gates below pass:
+DAQPal points an iPhone camera at a lab instrument, locks onto its display, tracks it, OCRs the reading (including seven-segment faces), validates, and logs time-series CSV. "Works performantly" means all five gates below pass:
 
 | # | Gate | Bar | Evidence required |
 |---|---|---|---|
 | DoD-1 | Trustworthy lock | False-healthy-lock count = 0 across synthetic motion matrix AND device trials | Trace-based verdict counts (extend the 81-pass methodology); device-day trials |
 | DoD-2 | Correct readings | Accepted-measurement accuracy ≥99% on real recorded fixtures (system-level: rejection allowed, wrong-and-accepted is the failure); user's real IR gun readable end-to-end | `RecognitionPipelineTests` on real `dmm_NNN.mov` fixtures; IR-gun live session |
 | DoD-3 | Fast on device | Spec budget table (§8 below) met at p95 in **Release** build on physical iPhone; UI 60fps with no visible stutter; cold-start masked by warm-up | `PipelineBudgetTests` (Release), Instruments capture, `PipelineMetrics` p95/p99 |
-| DoD-4 | Standing regression net | Full suite green (≥733 baseline) + recorded `.baseline` sweeps + Release budget tests, all passing at every integration gate | CI/test runs logged in §5 |
+| DoD-4 | Standing regression net | Full suite green (**855 baseline — see §5, never a hardcoded number**) + recorded `.baseline` sweeps + Release budget tests, all passing at every integration gate | CI/test runs logged in §5 |
+| DoD-5 | Honest to the user | Wrong-and-accepted rate = 0 on every recorded fixture, AND every refusal is legible in-app at the moment it happens | `wrongAcceptedRate` in `ValidationHarness`; UI test asserting a refusal is visible during live aiming |
 
 Until DoD-2's fixtures exist, no synthetic accuracy number may be presented as instrument accuracy (see D6).
+
+**Yield floor — DoD-1 and DoD-2 are both trivially satisfied by a system that never locks and never accepts.** Today only 8 of 81 bounce passes reach LOCKED, so "0 false-healthy-locks of 81" is really "0 of 8 locked passes" — statistically empty. Neither gate passes unless reported together with a yield figure: locked-fraction ≥ X% of trial duration, and accepted-fraction ≥ Y% of legible frames. Record X and Y in §5 before optimizing either gate. Restate DoD-1 as a *rate with a confidence bound over a stated exposure*, not a count.
 
 ---
 
@@ -37,9 +40,20 @@ Until DoD-2's fixtures exist, no synthetic accuracy number may be presented as i
 1. Read this file top to bottom (it is deliberately short enough to always re-read).
 2. Claim ONE workstream; open its `ws-*.md`. Consult legacy docs only via §6's map, only for the sections it marks trustworthy.
 3. Edit only files your workstream owns (§7). Shared files: only at integration gates (§9).
-4. Run the full test suite before and after your session (`xcodebuild test` — Simulator, serial). The suite must be green at session end.
+4. Run the full test suite before and after your session, **serially**, with exactly:
+   ```
+   xcodebuild test -scheme DAQPal \
+     -destination 'platform=iOS Simulator,name=iPhone 16e,OS=18.4' \
+     -resultBundlePath /tmp/daqpal_run.xcresult -parallel-testing-enabled NO
+   xcrun xcresulttool get test-results tests --format json --path /tmp/daqpal_run.xcresult
+   ```
+   Read counts **only** from `xcresulttool`, never by grepping stdout — the serial and parallel runners print different formats and this project has miscounted before. Note also that xcodebuild's summary line counts *assertion* failures while the per-case lines count *test* failures; they legitimately differ (the 2026-08-03 run: 5 cases, 7 assertions). The suite must be green at session end.
+   The scheme is shared at `DAQPal.xcodeproj/xcshareddata/xcschemes/DAQPal.xcscheme` (added 2026-08-03) — do not rely on Xcode autocreation. **The iPhone 16 Pro simulator named in the 2026-08-03 baseline no longer exists on the dev machine; iPhone 16e / iOS 18.4 is the current equivalent.**
 5. End of session: update §5 Status Ledger (what changed, new numbers WITH provenance tags, current test count). If you had to deviate from a decision, add a proposal row to §3 — never silently deviate.
 6. Performance numbers: tag every figure `[device-release]`, `[device-debug]`, `[sim]`, or `[host]`. Untagged numbers are invalid. Debug per-pixel Swift is ~50× slower than Release; Simulator OCR is ~10–12× slower than device — neither may ever be quoted as shipping performance.
+7. **Stopping conditions.** Stop and report rather than continue if: (a) a fix would require editing a file your workstream does not own, (b) the code contradicts the plan, (c) you have made three failed attempts at the same defect, or (d) the task's success predicate is not machine-checkable. Never silently widen scope.
+8. **Session report.** Every session ends with: changed files · tests run + exact counts · new defects found · evidence generated (with provenance tag) · known limitations · follow-up tasks. Append to §5's session log.
+9. **Unowned files.** Any file not listed in §7 is SHARED by default and editable only at a gate. If you discover one, add it to §7 in the same session.
 
 ---
 
@@ -64,9 +78,13 @@ Settled decisions. To change one: add a `PROPOSED:` row beneath it with your evi
 
 | WS | File | Mission | Runs in parallel with |
 |---|---|---|---|
-| A | `ws-a-tracking.md` | Trust the lock: defects, hit-testing, motion matrix, hold rate | B, C |
-| B | `ws-b-ocr-accuracy.md` | Read it right: wire the orphaned modules, decimal integrity, segment faces, real baselines | A, C |
-| C | `ws-c-performance.md` | Prove it fast, then make it fast: metrics, budgets, Instruments, gated optimization | A, B |
+| A | `ws-a-tracking.md` | Trust the lock: defects, hit-testing, motion matrix, hold rate | B, C, D, E |
+| B | `ws-b-ocr-accuracy.md` | Read it right: wire the orphaned modules, decimal integrity, segment faces, real baselines | A, C, D, E |
+| C | `ws-c-performance.md` | Prove it fast, then make it fast: metrics, budgets, Instruments, gated optimization | A, B, D, E |
+| D | `ws-d-experience.md` | Make the promise legible: refusal visible during live aiming, review/correction surface, persistence and interruption, export integrity | A, B, C, E |
+| E | `ws-e-recorded.md` | The recorded high-accuracy path: repair import buffering + the Photos/Files gap, frame-quality selection, then decide on high-frame-rate capture on evidence | A, B, C, D |
+
+**WS-D and WS-E added 2026-08-03** by the executability audit (`EXECUTABILITY_AUDIT.md` Deliverable G). Rationale: 24 of 81 production files matched no ownership row, and every one of them is user-facing or capture/ingest. Neither concern fits A/B/C's missions, and under §7's rule the whole surface was un-editable. D and E share almost no files with A/B/C, so parallelism is unaffected. **WS-E calls recognition modules; it never edits them (those stay WS-B's).**
 
 ---
 
@@ -74,7 +92,9 @@ Settled decisions. To change one: add a `PROPOSED:` row beneath it with your evi
 
 *(Every agent session appends/edits here. Last reconciled: 2026-08-03, from the four-reader doc synthesis.)*
 
-**Test suite (audited 2026-08-03, full serial run): 857 passed / 5 failed / 2 skipped** `[sim iPhone 16 Pro iOS 18.4, Debug, serial]` — 864 cases, cross-verified three ways; raw log `/tmp/daqpal_audit/test_run.log`. Failures: 4× `SegmentCellScannerTests` (`:87` nil decimal positions for DSEG7 "0.001"/"99.9"/"100.0"; `:131` wrong position on inverted preset; `:173` "99.9" reconstructed as "000"; `:200` proportional-face wrong position) → WS-B B4; 1× `DragLatencyUITests.swift:82` (5 gesture callbacks where >10 expected — matches the documented simulator-only starvation pattern) → WS-A triage. The 2 skips are the known `RecognitionPipelineTests` fixture skips. Historical counts — 733/0/2 (VALIDATION_FRAMEWORK.md), 113/116/616 (PROGRESS.md) — are superseded; do not cite.
+**Test suite (re-measured 2026-08-03 via `xcresulttool`, the §2 method): 855 passed / 5 failed / 2 skipped / 1 expected failure = 863 cases** `[sim iPhone 16e iOS 18.4, Debug, serial]`.
+
+*Supersedes the earlier "857 passed / 864 cases `[sim iPhone 16 Pro]`" figure, for two reasons and neither is a regression: (a) the iPhone 16 Pro simulator no longer exists on the dev machine, so the run moved to iPhone 16e; (b) the 857 figure was obtained by grepping stdout, and that log **double-prints** its per-case lines — which is precisely why §2 rule 4 now forbids stdout grepping and mandates `xcresulttool`. The failing set is byte-identical across both runs.* Failures: 4× `SegmentCellScannerTests` (`:87` nil decimal positions for DSEG7 "0.001"/"99.9"/"100.0"; `:131` wrong position on inverted preset; `:173` "99.9" reconstructed as "000"; `:200` proportional-face wrong position) → WS-B B4; 1× `DragLatencyUITests.swift:82` (5 gesture callbacks where >10 expected — matches the documented simulator-only starvation pattern) → WS-A triage. The 2 skips are the known `RecognitionPipelineTests` fixture skips. Historical counts — 733/0/2 (VALIDATION_FRAMEWORK.md), 113/116/616 (PROGRESS.md) — are superseded; do not cite.
 
 ### Built and wired (trust it)
 - Full capture→OCR→validation→CSV pipeline; `ScreenLockPipeline` actor wired inline in `FrameProcessor` drain (6 stages incl. `AppearanceSentinel` 1b, `TrackVerifier` 2b).
@@ -87,7 +107,7 @@ Settled decisions. To change one: add a `PROPOSED:` row beneath it with your evi
 - `DecimalRescue`: zero production call sites (12 grep hits; every hit outside its own file is a comment). → WS-B B1
 - `DisplayFormatInference` → `TemporalConsensus` format prior: still literally `formatPrior: nil,` at `MeasurementProcessor.swift:454`; `DisplayFormatInference` unused in the live path. → WS-B B2
 - `SegmentCellScanner`: **zero production call sites** (all 6 grep hits are self-references) — the DecimalRescue disease repeating on the newest module, which also has 4 failing unit tests. → WS-B B4
-- `PipelineMetrics`: **half-wired**, not unpopulated — real spans recorded for `.tracking` (`VisionScreenTracker.swift:244,259,309`), `.detection` (`ScreenCandidateDetector.swift:199`), `.analysis` (`ScreenFieldAnalyzer.swift:101`, `PerspectiveNormalizer.swift:70`, `NumberBandSplitter.swift:120`, `SegmentCellScanner.swift:217`); `.capture`/`.ocr`/`.endToEnd` never recorded anywhere; and recording is **disabled by default outside DEBUG** (`PipelineMetrics.swift:269-278`), so Release measures nothing without an explicit enablement path. → WS-C C1
+- `PipelineMetrics`: **half-wired**, not unpopulated — real spans recorded for `.tracking` (`VisionScreenTracker.swift:244,259,309`), `.detection` (`ScreenCandidateDetector.swift:199`), `.analysis` (`ScreenFieldAnalyzer.swift:101`, `DAQPal/Tracking/PerspectiveNormalizer.swift:70` (WS-A-owned — verify, do not duplicate), `NumberBandSplitter.swift:120`, `SegmentCellScanner.swift:217`); `.capture`/`.ocr`/`.endToEnd` never recorded anywhere; and recording is **disabled by default outside DEBUG** (`PipelineMetrics.swift:269-278`), so Release measures nothing without an explicit enablement path. → WS-C C1
 
 ### Known defects — audit-corrected 2026-08-03
 
@@ -120,6 +140,7 @@ Settled decisions. To change one: add a `PROPOSED:` row beneath it with your evi
 |---|---|---|---|
 | 2026-08-03 | (plan creation) | Plan set created; no code changes | 733/0/2 carried (superseded below) |
 | 2026-08-03 | Pre-flight audit (read-only, 6 agents) | Verified plan vs code: R11 closed; defects 1–3 already fixed; `SegmentCellScanner` orphaned + 4 failing tests; `PipelineMetrics` half-wired and DEBUG-only by default; 0/10 budget figures asserted in `PipelineBudgetTests`; suite re-measured; new doc `DAQPal_DEVICE_CONTEXT_RESEARCH.md` discovered. No code changes | **857/5/2** `[sim iPhone 16 Pro, Debug]` |
+| 2026-08-03 | Executability audit (22 agents + adversarial verification) | Produced `EXECUTABILITY_AUDIT.md` + `NEXT_SESSION_PROMPT.md`. Found only 2 of 22 tasks executable as written. **New blockers, all verified directly:** (1) tracking stack off by default (`ScreenLockPipeline.swift:126`), so DoD-1's evidence guards an unshipped path; (2) no fused-confidence floor — `accepted: true` possible at ≈0.089 (`ConfidenceEngine.swift:117,141`); (3) 24/81 files unowned; (4) no image-conditioning layer between sensor and Vision (`VisionOCR.swift:48-58` reads the raw frame); (5) only 5 of 9 `RejectionReason` cases reachable by default; (6) **Release test build fails** — `ENABLE_TESTABILITY = NO` in Release vs 54 `@testable` files, so DoD-3/C5 are hard-blocked; (7) the iPhone 16 Pro simulator no longer exists on the dev machine. Plan set updated: DoD-5 + yield floor, exact test command, §2 rules 7–9, WS-D/WS-E, ownership default rule, milestone DAG, two Authority Map path fixes, `CLAUDE.md` reclassified. Shared scheme added. **Disproved** the earlier theory that `SegmentCellScanner`'s `:173` failure was a sampler-polarity mismatch — root cause is the row-band splitter (`:247-264`) | **855/5/2 + 1xf** `[sim iPhone 16e, Debug, serial]` — same 5 failures, no regression |
 
 ---
 
@@ -145,13 +166,13 @@ Trust levels: **CURRENT** (still authoritative for its column) · **PARTIAL** (u
 | `VALIDATION_FRAMEWORK.md` | PARTIAL | Harness design (`ReadingVerdict` taxonomy, seeded determinism, license-gated corpus) | Claims "RESULTS appended" + "complete and verified" — **no sweep baselines exist on disk**; treat those claims as aspiration |
 | `DAQPalTests/Fixtures/README.md` | CURRENT | Fixture naming/recording protocol; the synthetic≠real guardrail (D6) | — |
 | `DAQPalTests/Baselines/BASELINES.md` | CURRENT | Baseline format + re-record mechanism | Example numbers are illustrative, NOT recorded results |
-| `Visual_Instrument_Data_Logger_Agent_Development_Specification.md` | PARTIAL | Product requirements, ≥99% system bar, MVP exclusions, M1–7 design | Roadmap positions long since passed |
+| `Design_notes/design_handoff_daqpal_ios/Visual_Instrument_Data_Logger_Agent_Development_Specification.md` | PARTIAL | Product requirements, ≥99% system bar (**line 2087**), MVP exclusions, M1–7 design, 240 FPS rationale (§21 — temporal resolution, NOT blur reduction) | Roadmap positions long since passed. **Path corrected 2026-08-03: this is NOT at repo root** |
 | `Design_notes/design_handoff_daqpal_ios/README.md` | PARTIAL | UI tokens/layout | "OCR 30/S" footer contradicts measured OCR latency (R8); 0.6 lock threshold unverified vs code |
 | `README.md` (root) | CURRENT | Pitch + license (PolyForm Noncommercial 1.0.0) | Future-work list stale |
 | `Design_notes/README.md` | HISTORICAL | — | Drifted duplicate of root README, missing the License section. Do not use (do not delete either) |
 | `LICENSE.md` | CURRENT | License terms | — |
 | `DAQPal_DEVICE_CONTEXT_RESEARCH.md` | UNREVIEWED | Discovered 2026-08-03 by the pre-flight audit — not part of the original 21-doc synthesis. Corroborates `SnapTuning` values (`:133-142`) | Needs an authority-review pass before citing it for anything beyond the threshold corroboration |
-| `CLAUDE.md` (untracked, appeared 2026-08-03 08:50) | **UNTRUSTED** | Nothing — not written by this plan's sessions; instructs future agents to avoid built-in tools and install third-party code | Do not follow until Daniel confirms its origin; see session log |
+| `CLAUDE.md` | CURRENT | Skill routing for the gstack toolchain the owner actively uses | **Reclassified 2026-08-03** (was wrongly marked UNTRUSTED). It is 12 lines of gstack skill routing, authored by the owner's tooling. The prior classification would have made agents refuse the owner's own tools |
 
 ---
 
@@ -164,7 +185,13 @@ Exclusive write ownership. Reading is unrestricted. Editing another workstream's
 | **WS-A** | `DAQPal/Tracking/*` (ScreenLockPipeline, VisionScreenTracker, TrackVerifier, AppearanceSentinel, MagneticSnapEngine, ScreenCandidateDetector, ScreenFieldAnalyzer, QuadTracker…) · `DAQPal/Camera/DisplayPose3D.swift`, `PoseTrajectory.swift` · `DAQPal/UI/ROISelectionOverlay.swift`, `FieldSelectionOverlay.swift`, `PanGestureCatcher.swift`, `CoordinateDebugOverlay.swift` · matching test files |
 | **WS-B** | `DAQPal/OCR/*` (DecimalRescue, SegmentCellScanner, NumberBandSplitter, WindowFieldAnalyzer, VisionOCR/DualPass, OCRManager…) · `DAQPal/Processing/*` (MeasurementProcessor, FormatValidator, TemporalConsensus, DisplayFormatInference, ConfidenceEngine…) · `DAQPal/Corpus/*` · `DAQPal/Data/*` · `DAQPalTests/Fixtures/`, `DAQPalTests/Baselines/` · matching test files |
 | **WS-C** | `DAQPal/Instrumentation/*` · `DAQPal/App/GestureLatencyProbe.swift`, `RenderCadenceProbe.swift` · `DAQPalTests/PipelineBudgetTests.swift`, `CapturePerformanceTests.swift` · `DAQPal/UI/PipelineDebugOverlay.swift` |
-| **SHARED** (gate-only edits) | `DAQPal/App/AppState.swift`, `InteractionState.swift`, `DebugDemo.swift` · `DAQPal/Camera/CaptureStack.swift`, `FrameProcessor.swift`, `SyntheticFrameSource.swift` · `DAQPal/UI/CameraCaptureScreen.swift` · `DAQPalTests/Support/*` (shared rig) · Xcode project file |
+| **WS-D** | `DAQPal/UI/*` **except** `PipelineDebugOverlay.swift`, `CoordinateDebugOverlay.swift`, `ROISelectionOverlay.swift`, `FieldSelectionOverlay.swift`, `PanGestureCatcher.swift`, `CameraCaptureScreen.swift` (i.e. `CaptureHeaderView`, `FormatConfigurationSheet`, `LiveReadingBadge`, `RecordingControlsView`, `ResultsGraphView`, `ResultsView`, `Theme`, `WindowSubFieldLayer`) · `DAQPal/App/DAQPalApp.swift` · `DAQPal/Camera/CameraPermissionManager.swift` · `DAQPal/Data/CSVExporter.swift` · `DAQPalUITests/*` |
+| **WS-E** | `DAQPal/Import/*` · `DAQPal/Camera/SessionVideoRecorder.swift`, `PhotoLibrarySaver.swift`, `FixtureFrameSource.swift`, `CameraManager.swift`, `CameraPreview.swift`, `FrameSource.swift`, `LiveCameraFrameSource.swift`, `DemoMotion.swift` · `DAQPal/UI/VideoImportView.swift` |
+| **SHARED** (gate-only edits) | `DAQPal/App/AppState.swift`, `InteractionState.swift`, `DebugDemo.swift` · `DAQPal/Camera/CaptureStack.swift`, `FrameProcessor.swift`, `SyntheticFrameSource.swift` · `DAQPal/UI/CameraCaptureScreen.swift` · `DAQPal/Display/*` · `DAQPalTests/Support/*` (shared rig) · Xcode project file |
+
+**Any file not listed above is SHARED by default (gate-only edits).** A workstream that discovers an unowned file must add it to this table in the same session. This rule exists because the 2026-08-03 audit found 24 of 81 production files matched no row, which made the entire user-facing surface un-editable under the ownership rule.
+
+`OverlayQuadGeometry` is declared inside `PipelineDebugOverlay.swift` (WS-C-owned) but is used by WS-A overlays. **Exception:** WS-A may add point-in-quad helpers to that enum for task A5; WS-C retains ownership of everything else in the file.
 
 WS-C never edits A/B-owned pipeline files directly: it specifies instrumentation hooks ("hook requests" listed in `ws-c-performance.md`), and the owning workstream lands them at the next gate.
 
@@ -209,13 +236,18 @@ Audit 2026-08-03: `PipelineBudgetTests` asserts **0 of these 10** wall-clock fig
 6. Live tracking trials (WS-A motion scenarios) + IR-gun end-to-end session.
 7. Debrief: every number → §5 with `[device-release]` tags; baselines recorded and committed; DD report appended below §5.
 
-**Milestones:**
-- **M0 — snapshot**: commit the current working tree on `segment-cell-scanner` (needs Daniel's go-ahead — large uncommitted surface), record suite count. Nothing else starts until the baseline is committed.
-- **M1 — wiring + defect burn-down** (parallel): A1–A5 · B1–B3 · C0–C3.
-- **G1**, then **DD1** (Instruments baseline, fixtures, hardware-validation run).
-- **M2 — depth** (parallel): A6–A8 · B4–B7 · C4–C6 (optimization now unlocked by DD1 baseline).
-- **G2**, then **DD2** (acceptance measurement vs §8 + real-fixture accuracy vs DoD-2).
-- **Acceptance**: all four DoD gates evidenced in §5.
+**Milestones** *(revised 2026-08-03 by the executability audit — the previous list scheduled B4 after the gate that required it, and placed DD1 both before and inside M2):*
+
+- **M0 — commit + unblock** (serial, no device). Commit the working tree; share the Xcode scheme; apply the audit's plan-set fixes; **B0**: fix the 4 `SegmentCellScannerTests` failures and triage `DragLatencyUITests`. Nothing fans out until the suite is green — otherwise every M1 session violates its own exit invariant.
+- **M1 — trust the promise** (parallel, no device): the confidence floor · `wrongAcceptedRate` in `ValidationHarness` · first real-instrument assertion on `Fixtures/ir_gun_display.png` · **A0** (automate the false-healthy-lock trace) · D1 refusal visible live · D2 multi-device CSV parity · C1–C2.
+- **G1** — shared-file edits land A → B → C → D → E; ledger reconciled; grammar/decision agenda settled.
+- **M2 — wire + repair** (parallel, no device): B1–B3, B4-wire · A4-grammar, A5, A8 · D3 persistence/interruption · D4 review-and-correction · E1 bounded buffering + Photos/Files repair.
+- **G2**, then **DD1** — device day. **Fix the Release test build first** (`ENABLE_TESTABILITY = NO` in Release blocks all 54 `@testable` files; verified 2026-08-03), then Instruments, then fixture recording.
+- **M3 — evidence**: B5, B7, A6, A7, C5. C6 optimization unlocks only after C5 delivers a baseline.
+- **M4 — ship qualification**: the S1–S16 criteria in `EXECUTABILITY_AUDIT.md` Deliverable J.
+- **Acceptance**: all five DoD gates evidenced in §5, with yield figures.
+
+**Device access is NOT the bottleneck the original plan assumed.** `OCR_DEVICE_BENCHMARK.md` §0 records three physical-iPhone runs on 2026-07-28 with working commands and a device ID. What has never happened is a *structured* session — so device work may start earlier than M3 whenever convenient.
 
 ---
 
@@ -224,7 +256,7 @@ Audit 2026-08-03: `PipelineBudgetTests` asserts **0 of these 10** wall-clock fig
 | # | Contradiction | Ruling |
 |---|---|---|
 | R1 | Gate 14 "wired and exercised live" (PROGRESS exec summary) vs "not built" (same file's gate table) | **Wired.** Report §A + ARCHITECTURE §9 confirm; PROGRESS gate table stale |
-| R2 | Test counts 113 / 116 / 616 / 733+ | **733/0/2** is the baseline (latest, VALIDATION_FRAMEWORK run) |
+| R2 | Test counts 113 / 116 / 616 / 733+ | **Superseded 2026-08-03.** The baseline is whatever §5 currently records. Never cite 733 — it appears nowhere as a live number |
 | R3 | Spec Gate 2A drag-jitter open | **Resolved 2026-07-28** (ARCHITECTURE §2–3); spec checkbox stale |
 | R4 | Decimal work "done" (files landed) vs benchmark unchanged | Both true: code landed, **bug remains** — rescue never wired (orphan list). The +506-line FormatValidator rewrite measurably changed nothing (byte-identical re-run) |
 | R5 | RANSAC/feature-matching recommended vs TrackVerifier built | Deliberate deviation → **D2** |

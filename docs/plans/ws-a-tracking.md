@@ -6,8 +6,9 @@ Read `docs/plans/MASTER_PLAN.md` first (protocol §2, ownership §7, decisions �
 
 ## Invariants (every session, non-negotiable)
 
-- **False-healthy-lock = 0.** Re-run the bounce verification trace (81-pass methodology) after every change to tracking/verification code. The 0-of-81 LOCKED-while-unverified result is the crown jewel; any regression reverts the change.
-- Full suite green (≥733 baseline) at session end.
+- **False-healthy-lock = 0.** ⚠️ **There is currently NO test for this.** Audit 2026-08-03: no symbol computing a false-healthy / LOCKED-while-unverified count exists anywhere in the repo — the "81-pass trace" is an `os_log` stream, not a runnable gate. **Task A0 must land before any other WS-A work** and must expose the count as an XCTest assertion. Until A0 exists this invariant is advisory and no WS-A task can be graded.
+  Two further cautions recorded by the audit: (a) only 8 of 81 bounce passes reach LOCKED, so "0 of 81" is really "0 of 8 locked passes" — report it as a rate over stated exposure, per §1's yield floor; (b) this stack is **off by default** (`ScreenLockPipeline.swift:126 isEnabled = false`, `AppState.swift:96 screenLockEnabled = false`), so the result currently guards a code path users never run. Flipping that default is ship criterion S1.
+- Full suite green at session end — the current baseline is in MASTER_PLAN §5, never a hardcoded number.
 - Tracking step stays within its ≤10ms/frame budget conceptually — no new per-frame heavy work without a WS-C measurement plan.
 - Do not weaken `TrackVerifier` thresholds to improve hold rate; hold rate must improve by tracking/reacquiring better, not by verifying less (D2).
 

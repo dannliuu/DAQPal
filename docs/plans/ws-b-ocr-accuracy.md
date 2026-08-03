@@ -8,7 +8,8 @@ Read `docs/plans/MASTER_PLAN.md` first (protocol §2, ownership §7, decisions �
 
 - **Zero-refusal is a defect, not a success.** The device benchmark's `refusedAmbiguousDecimal = 0%` while 9.7% of values were silently wrong by 10× is the exact anti-pattern; every fix must prefer refusal over guessing.
 - Synthetic results are labeled synthetic, always (D6). Never quote them as instrument accuracy.
-- Full suite green (≥733) at session end; `DecimalRescueTests` (23), `DecimalBenchmarkTests`, corpus tests all stay green.
+- Full suite green at session end (baseline in MASTER_PLAN §5, never a hardcoded number); `DecimalRescueTests` (23), `DecimalBenchmarkTests`, corpus tests all stay green.
+- **A fused-confidence floor is mandatory.** Audit 2026-08-03: `ConfidenceEngine.swift:117` multiplies five factors into `finalConfidence`, but the rejection ladder (`:119-145`) gates only the raw `ocr` term, and `:141` multiplies again *after* the last check. A reading can export `accepted: true` at ≈0.089 confidence. No WS-B change may ship that widens this hole; closing it is task B0.
 - Engine decisions are settled (D1: Vision hot path; D3: no training) — work within them.
 
 ## Owned files
