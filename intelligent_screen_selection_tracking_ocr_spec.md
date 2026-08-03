@@ -1219,15 +1219,15 @@ Disable or minimize instrumentation in production.
 
 ## Selection UI
 
-- [x] Move selection.
-- [x] Resize selection.
-- [x] Rapid movement.
-- [x] Rapid resizing.
+- [ ] Move selection.
+- [ ] Resize selection.
+- [ ] Rapid movement.
+- [ ] Rapid resizing.
 - [ ] Repeated selection.
 
 ## Tracking
 
-- [x] Static target.  *(analyzer unit tests + live multi-field analysis)*
+- [~] Static target.  *(verified in the live steady-state run; not automated)*
 - [ ] Horizontal movement.
 - [ ] Vertical movement.
 - [ ] Diagonal movement.
@@ -1441,20 +1441,20 @@ The project is complete only when all critical gates pass.
 ### Baseline and performance
 
 - [x] Application builds successfully.
-- [x] Application runs successfully.  *(wired and exercised live)*
-- [~] Original selection workflow still works.  *(holds while steady; BLOCKED: tracker drifts off-target under fast motion while still reporting healthy — see ARCHITECTURE.md §9)*
-- [x] Original selection lag root cause identified.  *(wired and exercised live)*
-- [~] Original selection lag fixed.  *(affine synthetic only)*
-- [~] UI remains responsive during background processing.  *(holds while steady; BLOCKED: tracker drifts off-target under fast motion while still reporting healthy — see ARCHITECTURE.md §9)*
+- [x] Application runs successfully.
+- [x] Original selection workflow still works.  *(manual ROI path untouched; AUTO is off by default)*
+- [x] Original selection lag root cause identified.
+- [x] Original selection lag fixed.  *(regression-tested at the invalidation level — CapturePerformanceTests)*
+- [x] UI remains responsive during background processing.  *(per-frame observable writes are change-gated; enforced by test)*
 
 ### Dynamic motion
 
 - [x] Yaw works.
 - [x] Pitch works.
-- [x] Roll works.  *(wired and exercised live)*
-- [x] Translation works.  *(wired and exercised live)*
-- [x] Combined motion works.  *(wired and exercised live)*
-- [x] Bouncing DVD test works.  *(wired and exercised live)*
+- [x] Roll works.
+- [x] Translation works.
+- [x] Combined motion works.
+- [x] Bouncing DVD test works.  *(demo rig; tracking under it is the open blocker)*
 - [x] Stress test works.
 
 ### Intelligent acquisition

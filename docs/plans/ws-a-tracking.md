@@ -1,0 +1,72 @@
+# WS-A — Tracking: Trust the Lock
+
+Read `docs/plans/MASTER_PLAN.md` first (protocol §2, ownership §7, decisions §3). Status is reported ONLY to the master ledger (§5) — never restated here.
+
+**Mission**: the lock is trustworthy under motion. A LOCKED overlay means the tracker is verifiably attached to the intended physical display; degradation is detected honestly; reacquisition returns to the *same* display; taps hit what they visually target.
+
+## Invariants (every session, non-negotiable)
+
+- **False-healthy-lock = 0.** Re-run the bounce verification trace (81-pass methodology) after every change to tracking/verification code. The 0-of-81 LOCKED-while-unverified result is the crown jewel; any regression reverts the change.
+- Full suite green (≥733 baseline) at session end.
+- Tracking step stays within its ≤10ms/frame budget conceptually — no new per-frame heavy work without a WS-C measurement plan.
+- Do not weaken `TrackVerifier` thresholds to improve hold rate; hold rate must improve by tracking/reacquiring better, not by verifying less (D2).
+
+## Owned files
+
+Per master §7: `DAQPal/Tracking/*`, `DisplayPose3D.swift`, `PoseTrajectory.swift`, `ROISelectionOverlay.swift`, `FieldSelectionOverlay.swift`, `PanGestureCatcher.swift`, `CoordinateDebugOverlay.swift`, and their test files. Shared files (`AppState`, `CameraCaptureScreen`, `FrameProcessor`, test `Support/`) only at gates.
+
+## Tasks (in order; A1 first — it is the top-priority defect in the implementation report §K)
+
+### A1 — Recovery re-seed proximity/identity gate
+`VisionScreenTracker.swift`: after 5 consecutive rejections, recovery re-seeds from the detector with **no proximity or identity check** — the lock can silently migrate to a different object — and re-seed confidence is blended with Vision's own score, which can mask a genuine `.lost`.
+- Add a proximity gate (center distance + IoU vs the last *verified* quad) and an identity check (appearance reference comparison, reusing `AppearanceSentinel`'s NCC machinery) before accepting a re-seed.
+- Separate re-seed provenance from Vision-track confidence; a re-seeded track must not report verified-level confidence until `TrackVerifier` corroborates it.
+- **Evidence gate**: new unit test with two synthetic displays where the old code migrates and the new code refuses; bounce trace still 0 false-healthy; suite green.
+
+### A2 — `ScreenCandidateDetector` corner-anchor freeze
+Aspect ratio collapses toward ~0 and can permanently block lock.
+- Reject degenerate quads (aspect/area floor) and reset the frozen anchor state.
+- **Evidence gate**: regression test reproducing the freeze from the defect description, now recovering.
+
+### A3 — `MagneticSnapEngine` release + grace-period fixes
+`release()` suppression bug can re-grab a display the user just rejected; `nil` vs `[]` candidate lists are conflated in the grace period.
+- **Evidence gate**: new cases in `MagneticSnapEngineTests` (user-rejection cool-down honored; `nil`/`[]` distinguished); suite green.
+
+### A4 — Numeric dominance + the shared grammar contract
+`ScreenFieldAnalyzer.numericIsDominant` misclassifies "230 VAC" / "12 PSI" as labels; its `numberPattern` regex disagrees with `FormatValidator` (B-owned).
+- Fix unit-suffix-aware classification.
+- **G1 agenda item (joint with WS-B)**: agree ONE numeric-token grammar (digits, separators incl. `,`, sign, unit suffixes, leading-separator forms like `.5`). A implements the analyzer side; B the validator side; the settled grammar is recorded in the master decision registry.
+- **Evidence gate**: `ScreenFieldAnalyzerTests` cover the misclassified cases; grammar parity test (same token set accepted by both sides) added at G1.
+
+### A5 — Overlay correctness
+Hit-testing uses the bounding box (~1.9× the true quad area at 30° roll — taps visually outside the display still hit it); `FieldSelectionOverlay` retains the per-frame-published-value-read-inside-gesture anti-pattern already fixed in `ROISelectionOverlay`.
+- Point-in-quad hit-testing; port the fixed gesture pattern (gesture state isolated from per-frame published geometry).
+- **Evidence gate**: hit-test unit tests at 0°/15°/30° roll (inside-quad hits, outside-quad-inside-bbox misses); `OverlayGeometryTests` + `DragStabilityTests` green; no new per-frame invalidations (`CapturePerformanceTests` pattern).
+
+### A6 — Motion matrix beyond bounce
+Verification is only proven on bounce + steady. Build synthetic-rig sweeps over: fast translation (incl. super-frame-rate steps), yaw ±55°, pitch ±55°, roll ±10°, scale 0.5–1.4×, occlusion 10–50%, blur, plus combinations (rig envelope per ARCHITECTURE §4).
+- Per scenario record: verdict counts, hold rate (non-REACQUIRING fraction), reacquisition latency (frames), false-healthy count (must be 0 everywhere).
+- Land results as `tracking-*.baseline` sweeps via the BASELINES.md mechanism (Baselines/ is B-owned — these files land at an integration gate).
+- **Evidence gate**: sweep table in master ledger with per-axis results; DoD-1 evidence base established.
+
+### A7 — Hold-rate improvement (follow, don't just detect)
+Baseline under bounce: only 8 LOCKED + 6 DEGRADED of 81 passes (67 REACQUIRING). The verifier stops lies; this task makes the tracker actually keep up.
+- Do NOT invent a numeric target up front (project honesty rule): A6's sweeps first quantify the achievable envelope; the target is then recorded in the master ledger before optimization starts.
+- Mechanisms to trial, each behind before/after sweep evidence: reacquisition seeding from last-verified quad + `PoseTrajectory` motion prediction; stale-tracker timeout (0.75s) and REACQUIRING detection cadence (0.1s) tuning within D7's change protocol; cheap local search before global re-detection.
+- This is where D2's "reopen if" clause gets tested honestly — if corroboration-based tracking cannot reach the recorded target, write the D2 reopen proposal with the sweep data.
+
+### A8 — Appearance robustness
+Structured static distractors (patterned poster) are only *bounded* by reference-refresh gating; backlight-polarity toggling breaks appearance comparison.
+- Polarity-tolerant comparison (e.g. sign-normalized NCC or dual-polarity reference) with the existing veto threshold discipline (0.35 NCC, 4-consecutive-failures).
+- **Evidence gate**: `AppearanceSentinelTests` extended with polarity-flip and poster-distractor cases; occlusion series (NCC 0.879/1.000/0.866/0.658 at 0/10/25/50%) not regressed.
+
+## Device-day requests (executed under master §9 protocol)
+
+- Handheld real-motion trials (translation/yaw/pitch sweeps) with trace capture → real-world verdict counts.
+- Slow-motion footage of fast motion past the instrument for offline replay through the rig.
+- Backlight-polarity toggle on a real instrument vs A8.
+- Live tap-accuracy check (HARDWARE_VALIDATION.md §5.9) after A5.
+
+## Non-goals
+
+RANSAC/feature-matching rewrite (D2 governs — proposal first), device-classification layer (out of scope), UI visual redesign, OCR changes (WS-B).
