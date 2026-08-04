@@ -88,6 +88,26 @@ struct FormatValidator {
         "I": "1", "l": "1",
         "S": "5", "s": "5",
         "B": "8",
+        // Unicode dashes that a display's minus sign is transcribed as. The
+        // numeric grammar's sign class is ASCII `[-+]?` only, so without these
+        // a leading U+2212 MINUS SIGN is not a sign — it is a foreign glyph.
+        //
+        // This closes a measured SIGN INVERSION, which is the same class of
+        // defect as a factor-of-ten error: a negative reading exported as
+        // positive. It is PRE-EXISTING (the map has never carried these), but
+        // the B0.5 tokenizer rule made it asymmetric and therefore easy to
+        // mistake for intentional — "\u{2212}125" refused as a leading foreign
+        // glyph while "\u{2212}12.5" was EXEMPTED (its run carries its own
+        // separator, so no decimal position was at stake) and silently exported
+        // +12.5. Normalizing here fixes both forms at the source rather than
+        // teaching the exemption about signs.
+        "\u{2212}": "-",   // MINUS SIGN
+        "\u{2013}": "-",   // EN DASH
+        "\u{2014}": "-",   // EM DASH
+        "\u{2010}": "-",   // HYPHEN
+        "\u{2011}": "-",   // NON-BREAKING HYPHEN
+        "\u{2012}": "-",   // FIGURE DASH
+        "\u{2015}": "-",   // HORIZONTAL BAR
     ]
 
     // MARK: - Separator-certainty policy
@@ -116,6 +136,30 @@ struct FormatValidator {
     /// The reading is self-consistent, but text alone cannot exclude a DROPPED
     /// separator, which is precisely the §11A failure — so this is deliberately
     /// below neutral and depresses the fused confidence.
+    ///
+    /// THIS IS AN ABSENCE CLAIM MADE FROM TEXT, AND IT HAS EXACTLY ONE JOB:
+    /// depress the fused confidence (`ConfidenceEngine`'s decimal factor). It
+    /// may NEVER be read as corroboration for a magnitude change. It used to
+    /// be, by accident of ordering — it sat at 0.75 while
+    /// `TemporalConsensus.decimalRescueConfidence` sat at 0.70, so "I saw no
+    /// separator" outscored the bar for "the glyph corroborates" and the
+    /// power-of-ten guard could never fire. `TemporalConsensus`
+    /// `.resolveDecimalEvent` now enforces the rule STRUCTURALLY (a form with
+    /// no separator cannot corroborate at any value) rather than by ordering,
+    /// so this constant can no longer reopen that hole. Do not "harmonize" the
+    /// two constants.
+    ///
+    /// Its pixel-level counterpart is `DecimalRescue.betweenDigitsOnlyCeiling`
+    /// (0.5): the module that can actually SEE the image caps any absence
+    /// verdict at 0.5. A text-only absence cannot honestly outrank it, so 0.75
+    /// is on notice — it is the number to revisit at B1, with the Mode-3
+    /// integer fixture that does not exist yet, and that revision is a decision
+    /// about a whole device class (D10), not a knob. It is deliberately NOT
+    /// changed here: lowering it changes global acceptance for every bare
+    /// integer reading as a side effect of fixing an ordering inversion, and
+    /// the current suite cannot measure that cost (every end-to-end fixture
+    /// renders a text containing a separator), which would make it an H3
+    /// violation by construction.
     static let undeclaredIntegerCertainty: Float = 0.75
 
     static func normalizeConfusables(_ text: String) -> String {
@@ -202,6 +246,13 @@ struct FormatValidator {
     ///    Separators are matched INSIDE the token deliberately: "12,345" and
     ///    "12..345" must each be analysed as one (possibly malformed) number,
     ///    not silently split into a pair the caller can pick a winner from.
+    ///    The pattern deliberately does NOT swallow foreign glyphs: widening it
+    ///    would push the decision down into `decompose`, where the only two
+    ///    outcomes are "this glyph is a separator" (which §11A forbids — see
+    ///    `splitSuspected`) or "reject", and by then the fact that the glyph was
+    ///    never CLASSIFIED as a separator has been thrown away. Classifying the
+    ///    GAP instead keeps the refusal at the point where that fact still
+    ///    exists.
     /// 3. Discard tokens whose ORIGINAL text contained no real digit —
     ///    otherwise pure-letter words mint fake numbers ("HOLD"→"H0LD"→0).
     /// 4. Drop CAPTION-GLUED tokens: a token with an ASCII letter immediately
@@ -210,16 +261,31 @@ struct FormatValidator {
     ///    half of a split number.
     /// 5. Choose among what is left, in this order:
     ///    a. exactly one candidate → that one;
-    ///    b. two candidates separated by WHITESPACE ONLY → a SPLIT reading
-    ///       ("12 345" is 12.345 with a dropped point, or 12345, or two
-    ///       numbers) → `.rejected(.ambiguousDecimal)`. This is defect 1: the
-    ///       old code picked the token with the most digits and returned 345;
+    ///    b. two BARE consecutive candidates whose gap is not a field boundary
+    ///       → a SPLIT reading → `.rejected(.ambiguousDecimal)`. The gap is
+    ///       classified three ways (`GapKind`): WHITESPACE is a dropped point's
+    ///       signature ("12 345" is 12.345, or 12345, or two numbers — defect 1,
+    ///       where the old code picked the most digits and returned 345); a
+    ///       FOREIGN GLYPH is the same failure with a mark still sitting in
+    ///       separator position ("80•8" → 80, "12•345" → 345), and refuses; a
+    ///       LETTER is an identified glyph that marks a genuine field boundary
+    ///       ("12 V 345") and does not refuse;
     ///    c. exactly one candidate carries a separator → prefer it over
     ///       bare-digit tokens ("CH1 12.345 V");
     ///    d. otherwise the most digits wins, leftmost on a tie.
+    ///    e. a bare CHOSEN token with an unclassifiable glyph GLUED to its front
+    ///       ("•5" for ".5") → `.rejected(.ambiguousDecimal)`. This is the
+    ///       single-token form of the same failure, which step (b) cannot see
+    ///       because there is only one token to compare.
     /// 6. Analyse the chosen token's separators; malformed shapes ("12..345",
     ///    "12.34.5", "12.") are REJECTED rather than salvaged, and an
     ///    unresolvable comma raises `.ambiguousDecimal`.
+    ///
+    /// In neither (b) nor (e) is an unidentified glyph ever READ as a separator.
+    /// It is only ever read as "this token cannot be trusted" — the opposite
+    /// action from the same trigger (spec §11A / WS-B H2). Authoring a decimal
+    /// position from a glyph the recognizer could not classify converts a class
+    /// that truncates into a class that INVENTS magnitude.
     ///
     /// Leniency here is about surrounding junk (captions, units, annunciators),
     /// never about the number's own structure. Range checking still happens
@@ -249,7 +315,7 @@ struct FormatValidator {
         let chosen: Token
         if candidates.count == 1 {
             chosen = candidates[0]
-        } else if hasWhitespaceOnlyGap(among: candidates, in: normalized) {
+        } else if splitSuspected(among: candidates, in: normalized) {
             return .rejected(.ambiguousDecimal)
         } else {
             let rich = candidates.filter(\.hasSeparator)
@@ -261,6 +327,12 @@ struct FormatValidator {
                 for token in candidates.dropFirst() where token.digits > best.digits { best = token }
                 chosen = best
             }
+        }
+
+        // The leading-separator class ("•5"), which is a single token and so
+        // never reaches the gap rule above.
+        if !chosen.hasSeparator, leadingForeignGlyph(before: chosen, in: normalized) {
+            return .rejected(.ambiguousDecimal)
         }
 
         var body = chosen.text
@@ -324,6 +396,13 @@ struct FormatValidator {
         let range: NSRange
         let digits: Int
         let hasSeparator: Bool
+        /// UTF-16 length of the token's OWN sign, so an INFIX "-" glued to the
+        /// preceding digit run ("80-8") is measured as gap rather than as this
+        /// token's sign.
+        var signLength: Int {
+            guard let first = text.first, first == "-" || first == "+" else { return 0 }
+            return 1
+        }
     }
 
     /// One resolved interpretation of a token's separator structure.
@@ -492,19 +571,67 @@ struct FormatValidator {
         return character.isASCII && character.isLetter
     }
 
-    /// True when two CONSECUTIVE candidate tokens look like ONE number split in
-    /// two by a dropped separator ("12 345"), as opposed to two genuinely
-    /// separate readings on the same line ("12.3 45.6").
+    /// What the text between two consecutive candidate tokens tells us about
+    /// whether they are ONE number or TWO fields.
+    private enum GapKind {
+        /// Whitespace only. A legitimate field delimiter on a display — and
+        /// also what a dropped separator leaves behind ("12 345").
+        case whitespace
+        /// Holds at least one LETTER. A letter is a glyph the recognizer
+        /// positively IDENTIFIED, and a letter-scale mark cannot be a decimal
+        /// point; it is a caption, unit or annunciator, so the runs either side
+        /// are separate FIELDS ("12 V 345", "12°C 345").
+        case fieldBoundary
+        /// Holds a glyph that is neither whitespace, nor a letter, nor a
+        /// recognized separator — a mark the recognizer could not classify,
+        /// sitting exactly where a decimal separator would sit.
+        case foreignGlyph
+    }
+
+    /// Letters are exempted UNICODE-WIDE, not ASCII-only, deliberately: "µ" and
+    /// "Ω" are units, and the property that matters is "carries letter-scale
+    /// ink, therefore cannot be a decimal point", which is script-independent.
+    /// (`isCaptionGlued` and `isASCIIDigit` stay ASCII-only for the opposite
+    /// reason — a Devanagari digit is not a reading this pipeline can parse.)
+    private static func classify(gap: String) -> GapKind {
+        var sawForeign = false
+        for character in gap {
+            if character.isWhitespace { continue }
+            if character.isLetter { return .fieldBoundary }
+            sawForeign = true
+        }
+        return sawForeign ? .foreignGlyph : .whitespace
+    }
+
+    /// True when two CONSECUTIVE candidate tokens look like ONE number broken in
+    /// two, as opposed to two genuinely separate readings on the same line
+    /// ("12.3 45.6").
     ///
-    /// Two conditions are required, and the second one matters as much as the
-    /// first:
+    /// Two conditions are required, and the second matters as much as the first:
     ///
-    /// 1. **Whitespace-only gap.** Any other character between them (a unit, a
-    ///    caption) means they are separate fields, not a split.
+    /// 1. **The gap is not a field boundary.** Whitespace alone is a dropped
+    ///    separator's signature ("12 345"); a gap holding a FOREIGN GLYPH is
+    ///    worse, because the glyph occupies separator position and the token
+    ///    grammar silently discarded it — measured on the shipping path,
+    ///    "80•8" (true 80.8) parsed as 80 and "12•345" (true 12.345) parsed as
+    ///    345, the most-digits picker returning a FRAGMENT with no trace that
+    ///    anything was dropped. Both refuse. A gap holding a LETTER does not:
+    ///    the letter is an identified glyph and marks a field boundary.
+    ///
+    ///    THE GLYPH IS NEVER READ AS A SEPARATOR (spec §11A / WS-B H2).
+    ///    Authoring a decimal position from a mark the recognizer could not
+    ///    classify turns a class that TRUNCATES into a class that INVENTS
+    ///    magnitude: a degree sign, a thousands comma, a colon lobe or a glare
+    ///    speck would become a decimal point. Refusal is the only sound action,
+    ///    and the fragment we would otherwise return is a factor-of-ten error
+    ///    either way.
+    ///
     /// 2. **NEITHER token already carries a separator.** A dropped separator
     ///    leaves two bare digit runs; it cannot leave a token that still has its
-    ///    own decimal point. So if either side is already a well-formed decimal,
-    ///    this is two readings, not one broken one.
+    ///    own decimal point, and a second separator on a token that has one is
+    ///    malformed and rejected by `decompose` anyway. So when either side is
+    ///    already a well-formed decimal this is two readings, not one broken
+    ///    one.
     ///
     /// Condition 2 was missing initially, which made the rule reject every line
     /// carrying two whitespace-separated numbers — including `"12.3 45.6"` and
@@ -513,19 +640,66 @@ struct FormatValidator {
     /// `ScreenCandidateDetector.numericScore`, which uses this same entry point
     /// as a display-detection heuristic: rejecting multi-number lines there
     /// makes real instrument panels *less* likely to be detected as screens.
-    private static func hasWhitespaceOnlyGap(among tokens: [Token], in normalized: NSString) -> Bool {
+    ///
+    /// The gap is measured from the end of the previous token to the first
+    /// DIGIT of the next, so a sign glued to a preceding digit run ("80-8") is
+    /// counted as gap. A "-" that cannot be a sign is an infix glyph.
+    private static func splitSuspected(among tokens: [Token], in normalized: NSString) -> Bool {
         for index in 1..<tokens.count {
             let previous = tokens[index - 1]
             let current = tokens[index]
             // A token that kept its separator is not a fragment of a split.
             if previous.hasSeparator || current.hasSeparator { continue }
             let start = previous.range.location + previous.range.length
-            let length = current.range.location - start
-            guard length > 0 else { continue }
-            let gap = normalized.substring(with: NSRange(location: start, length: length))
-            if gap.allSatisfy({ $0.isWhitespace }) { return true }
+            let end = current.range.location + current.signLength
+            guard end > start else { continue }
+            let gap = normalized.substring(with: NSRange(location: start, length: end - start))
+            switch classify(gap: gap) {
+            case .whitespace, .foreignGlyph: return true
+            case .fieldBoundary: continue
+            }
         }
         return false
+    }
+
+    /// True when a glyph the recognizer could not classify is GLUED to the front
+    /// of a bare digit run — the leading-separator class ("•5"): the display
+    /// shows ".5", Vision transcribes the dot as a bullet, the token grammar
+    /// discards it and a bare 5 is parsed. A silent 10× error, and the class
+    /// every failure in the device benchmark belongs to.
+    ///
+    /// It is NOT read as a separator (spec §11A / WS-B H2): "•5" is ".5", or it
+    /// is "5" with a speck, and the text cannot say which. Authoring the dot
+    /// would make a degree sign or a glare speck into a decimal point. Refuse.
+    ///
+    /// Three exemptions, each a case where the glyph provably is not in
+    /// separator position:
+    ///  - the run already carries its OWN separator ("•0.5", "(12.345)") — a
+    ///    second separator there is malformed, so no decimal position is at
+    ///    stake. Checked by the caller.
+    ///  - the glyph is whitespace, a letter, a digit, or a recognized separator.
+    ///  - the glyph is itself preceded by a letter or a digit ("T1:5",
+    ///    "DC VOLTS:5"), which makes it a LABEL delimiter between two fields
+    ///    rather than a mark inside one number.
+    ///
+    /// Mirrors `isCaptionGlued`'s leading/trailing asymmetry: the TRAILING side
+    /// is deliberately not checked, because that is where units live — "90.0°"
+    /// and "98.6 °F" must keep reading, and a trailing mark cannot shift a
+    /// decimal position that has already been established to its left.
+    private static func leadingForeignGlyph(before token: Token, in normalized: NSString) -> Bool {
+        let index = token.range.location - 1
+        guard index >= 0,
+              let glyph = normalized.substring(with: NSRange(location: index, length: 1)).first
+        else { return false }
+        if glyph.isWhitespace || glyph.isLetter || isASCIIDigit(glyph) || isSeparator(glyph) {
+            return false
+        }
+        if index - 1 >= 0,
+           let preceding = normalized.substring(with: NSRange(location: index - 1, length: 1)).first,
+           preceding.isLetter || isASCIIDigit(preceding) {
+            return false
+        }
+        return true
     }
 
     private static func flatten(_ result: FormatReadingResult) -> FormatParseResult {

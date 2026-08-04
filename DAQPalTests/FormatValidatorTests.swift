@@ -285,6 +285,47 @@ final class FormatValidatorTests: XCTestCase {
                        .invalid(.ambiguousDecimal))
     }
 
+    /// Regression sweep for the foreign-glyph refusal (spec §11A defect 3).
+    ///
+    /// The rule only ever fires on an UNCLASSIFIABLE glyph sitting where a
+    /// decimal separator would sit. Everything a real instrument line actually
+    /// contains — units glued or spaced, annunciators, captions, grouping
+    /// commas, signs, trailing decoration, two readings on one line — must come
+    /// through byte-identically. This is the recall half of the change; the
+    /// refusal half lives in `DecimalIntegrityTests`.
+    func testExtract_foreignGlyphRuleLeavesOrdinaryInstrumentLinesAlone() {
+        let unchanged: [(String, Double)] = [
+            ("12.345", 12.345), ("AUTO 12.3 mV", 12.3), ("12.3 45.6", 12.3),
+            ("12.345 12.345", 12.345), ("1,234.5", 1234.5), ("1,234,567", 1234567),
+            ("-.5", -0.5), (".5", 0.5), ("-5", -5), ("+0.5", 0.5), ("+5", 5),
+            ("CH1 12.345 V", 12.345), ("VOLTAGE 12.345 mV", 12.345),
+            ("DC VOLTS: 12.345", 12.345), ("98.6 \u{00B0}F", 98.6), ("90.0\u{00B0}", 90.0),
+            ("90.0C", 90.0), ("12.3V", 12.3), ("1.5mA", 1.5), ("230VAC", 230),
+            ("12.345 VDC", 12.345), ("0.5 PSI", 0.5), ("12 PSI", 12), ("45 %", 45),
+            ("1200 lux", 1200), ("1750 RPM", 1750), ("350 CFM", 350), ("450 ppm", 450),
+            ("7.2 pH", 7.2), ("15.23 kW", 15.23), ("101.3 kPa", 101.3),
+            ("2ND", 2), ("AUX2", 2), ("ABCDE1", 1),
+            ("(12.345)", 12.345), ("12", 12), ("123", 123), ("6", 6), ("0", 0),
+            ("-1.5", -1.5), ("08", 8), ("008", 8), ("0.80", 0.8), ("00.8", 0.8),
+            ("80", 80), ("800", 800), ("8.0", 8), ("8.00", 8), ("1.00", 1), ("100", 100),
+            ("-20.5", -20.5), ("0.8", 0.8), ("12.3 -45.6", 12.3), ("T1:5", 5), ("1.5", 1.5),
+        ]
+        for (text, expected) in unchanged {
+            XCTAssertEqual(FormatValidator.extractNumber(from: text)?.value, expected,
+                           "'\(text)' must still read \(expected)")
+        }
+
+        // No numeric token at all, and no numeric token invented.
+        for text in ["HOLD", "AUTO", "---", "...", "   ", ""] {
+            XCTAssertNil(FormatValidator.extractNumber(from: text), "'\(text)'")
+        }
+
+        // Still rejected, and for their pre-existing reasons.
+        for text in ["12 345", "12,345", "12.34.7", "12..345", "12."] {
+            XCTAssertNil(FormatValidator.extractNumber(from: text), "'\(text)'")
+        }
+    }
+
     func testDispatch_unconstrainedNoDigitsIsInvalidFormat() {
         XCTAssertEqual(FormatValidator.value(from: "HOLD", format: .unconstrained),
                        .invalid(.invalidFormat))

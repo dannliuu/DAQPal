@@ -118,11 +118,29 @@ struct TemporalConsensus: Equatable, Sendable {
     /// evidence than an ordinary one.
     static let decimalEventSupport = 3
 
-    /// Decimal-rescue confidence at or above which the separator verdict counts
-    /// as corroboration for a decimal event. Mirrors
-    /// `ConfidenceEngine.decimalVetoThreshold`'s spirit at a stricter setting:
-    /// accepting a 10× change deserves more than "not vetoed".
-    static let decimalRescueConfidence: Float = 0.7
+    /// Confidence a PRESENT separator must reach before it counts as
+    /// corroboration for a decimal event. It is only ever consulted for a form
+    /// that actually carries a separator (see `resolveDecimalEvent`) — absence
+    /// is handled structurally, not by a number.
+    ///
+    /// ORDERING IS THE CONTRACT, and it was inverted in the shipped build:
+    ///
+    ///     FormatValidator.undeclaredIntegerCertainty  0.75   ("I saw no separator")
+    ///     decimalRescueConfidence                     0.70   (bar to corroborate)
+    ///
+    /// so "I saw nothing" outscored the bar for "the glyph corroborates", and
+    /// the guard in `resolveDecimalEvent` could never fail on the shipping path
+    /// (measured: 0 of 27 parseable readings fell under it). This value must
+    /// stay STRICTLY GREATER than `FormatValidator.undeclaredIntegerCertainty`
+    /// and AT MOST `FormatValidator.commaDecimalCertainty` (0.8) — a comma
+    /// resolved by grouping shape is still a separator that was READ, and must
+    /// still be able to corroborate. Pinned by test, not by comment
+    /// (`TemporalConsensusTests.testCorroborationBarOutranksAnAbsenceClaim`).
+    ///
+    /// 0.78 rather than 0.80: `averageDecimalConfidence` is a mean of `Float`s,
+    /// so a threshold sitting exactly on a source constant can flip with run
+    /// length. Do not "tidy" this to 0.8.
+    static let decimalRescueConfidence: Float = 0.78
 
     /// A format prior must be at least this stable before its agreement counts
     /// as corroboration for a decimal event.
@@ -314,8 +332,32 @@ struct TemporalConsensus: Equatable, Sendable {
     /// Rule 1 — the power-of-ten guard. The new reading is the anchor with a
     /// separator added or dropped at a digit boundary, so this is a DECIMAL
     /// EVENT, not a measurement change, and it is held to a higher standard:
-    /// sustained support AND independent corroboration (a confident separator
-    /// verdict, or agreement from the format prior).
+    /// sustained support AND independent corroboration.
+    ///
+    /// THE CORROBORATION RULE, and it is asymmetric on purpose:
+    ///
+    ///   Corroboration requires a separator that was SEEN. The ABSENCE of a
+    ///   separator is never corroboration — not in this guard, and not in any
+    ///   future signal added to it.
+    ///
+    /// The reason is that an absence claim made from TEXT is indistinguishable
+    /// from a dot destroyed by thresholding, which is the exact failure this
+    /// type exists for. "This display is an integer display" and "this
+    /// display's dot stopped surviving preprocessing" are the same observation,
+    /// so a text-level absence cannot buy a factor of ten in either direction.
+    ///
+    /// Consequence, and it is the point: `808 → 80.8` may still migrate,
+    /// `80.8 → 808` may not, at ANY confidence.
+    ///
+    /// BOTH corroboration channels are gated by the rule, not just the
+    /// confidence one. The format prior is a GRAMMAR match
+    /// (`InferredFormat.agrees(withText:)`), so a prior the window learned from
+    /// separator-free text carries exactly the same absence claim and would
+    /// otherwise reopen the hole through the second `||` arm. It is dead on the
+    /// live path today (`MeasurementProcessor.finalize` passes `formatPrior:
+    /// nil`), which is precisely why it must be closed now rather than when it
+    /// is wired. A prior may only ever GATE — it never rewrites a value or a
+    /// text here (see `testFormatPriorDoesNotRewriteAReading`).
     private mutating func resolveDecimalEvent(newValue: Double,
                                               newText: String,
                                               against established: Anchor,
@@ -323,22 +365,39 @@ struct TemporalConsensus: Equatable, Sendable {
         let newSupport = support(for: newText)
         let anchorSupport = support(for: established.text)
 
-        let corroboratedBySeparator =
+        // THE ASYMMETRY. Presence is checked STRUCTURALLY and FIRST; evidence
+        // is only weighed about a separator that is actually there.
+        //
+        // `ReadingGrammar(text:)` is guaranteed to parse here: this method is
+        // reached only when `decimalShiftExponent` returned non-nil, which
+        // already required it. The `?? false` is fail-closed cover, not a live
+        // path.
+        let newFormCarriesSeparator = ReadingGrammar(text: newText)?.separatorPresent ?? false
+        let separatorIsConfident =
             averageDecimalConfidence(for: newText) >= Self.decimalRescueConfidence
-        let corroboratedByPrior = prior.map {
+        let priorAgrees = prior.map {
             $0.stability >= Self.priorCorroborationStability && $0.agrees(withText: newText)
         } ?? false
+        let corroborated = newFormCarriesSeparator && (separatorIsConfident || priorAgrees)
 
         if newSupport >= Self.decimalEventSupport, newSupport > anchorSupport {
-            guard corroboratedBySeparator || corroboratedByPrior else {
+            guard corroborated else {
                 // Sustained contradicting evidence, but nothing independent
                 // vouches for the separator verdict. Publishing either side
                 // would be a coin flip on an order of magnitude, and holding
                 // the anchor forever would be a deadlock that quietly outlives
                 // its own evidence — so this is exactly what `.ambiguous` is
                 // for. The anchor is NOT moved.
+                //
+                // The two causes must stay distinguishable in the debug string:
+                // the `RejectionReason` is `.ambiguousDecimal` either way (set
+                // in `MeasurementProcessor.finalize`), so this text is the only
+                // place the difference survives.
+                let why = newFormCarriesSeparator
+                    ? "separator verdict too weak to buy a 10× change"
+                    : "the new form has NO separator; an absence in text is not evidence"
                 return .ambiguous(reason: "\(established.text) → \(newText) is a "
-                                  + "power-of-ten separator change with no corroboration",
+                                  + "power-of-ten separator change — \(why)",
                                   candidates: candidateValues(established.text, newText))
             }
             let migrated = Anchor(value: newValue,

@@ -155,6 +155,124 @@ final class DecimalIntegrityTests: XCTestCase {
         XCTAssertEqual(try extracted("AUTO 12.3 mV").value, 12.3)
     }
 
+    // MARK: - Defect 3 regression: an UNIDENTIFIED glyph in separator position
+    //
+    // The tokenizer used to split at any glyph outside `[0-9.,]` and the picker
+    // then took the fragment with the most digits — with NO trace that anything
+    // had been dropped. Measured on the shipping path: "80•8" (a display truly
+    // showing 80.8, whose dot Vision transcribed as a bullet) parsed as 80, and
+    // "12•345" parsed as 345. Every one is a silent power-of-ten error in
+    // exported data, which is the exact failure §11A exists to prevent.
+    //
+    // THE GLYPH IS NEVER READ AS A SEPARATOR. The obvious-looking fix — "a
+    // non-alphanumeric glyph in separator position is separator evidence" —
+    // is REJECTED and must not be implemented: it authors a decimal position
+    // from a mark the recognizer could not classify, so a degree sign, a
+    // thousands comma, a colon lobe or a glare speck becomes a decimal point.
+    // It converts a class that TRUNCATES into a class that INVENTS magnitude.
+    // Same trigger, opposite action: refuse.
+
+    /// The mandated refusals. Asserted through BOTH entry points so the reason
+    /// survives the dispatcher and is not flattened to `.invalidFormat` on its
+    /// way to the UI.
+    func testForeignGlyphBetweenDigitRunsIsRefusedNotTruncated() {
+        let cases: [(text: String, wouldHaveParsedAs: Double)] = [
+            ("80\u{2022}8", 80),      // BULLET — the measured live corruption
+            ("12\u{2022}345", 345),   // ...and its truncating twin
+            ("80\u{00B7}8", 80),      // MIDDLE DOT
+            ("12:345", 345),          // COLON — a lobe of a segment display
+            ("80\u{00B0}8", 80),      // DEGREE SIGN
+            ("80-8", 80),             // an infix hyphen the sign rule cannot claim
+        ]
+        for c in cases {
+            XCTAssertEqual(FormatValidator.extractReading(from: c.text),
+                           .rejected(.ambiguousDecimal),
+                           "'\(c.text)' must refuse, not return \(c.wouldHaveParsedAs)")
+            XCTAssertEqual(FormatValidator.value(from: c.text, format: lenient),
+                           .invalid(.ambiguousDecimal),
+                           "'\(c.text)': the reason must survive the Mode 3 dispatcher")
+            XCTAssertNotEqual(FormatValidator.extractNumber(from: c.text)?.value,
+                              c.wouldHaveParsedAs,
+                              "'\(c.text)': the fragment is not the reading")
+        }
+    }
+
+    /// The same class, pinned across the glyph set Vision actually produces on
+    /// segment faces and glare.
+    func testForeignGlyphRefusalCoversTheObservedGlyphSet() {
+        for text in ["80\u{2019}8", "80'8", "80*8", "80;8", "80\u{2044}8", "8\u{2022}08"] {
+            XCTAssertEqual(FormatValidator.extractReading(from: text),
+                           .rejected(.ambiguousDecimal),
+                           "'\(text)' must refuse")
+        }
+    }
+
+    /// The LEADING-separator class, which is a single token and so never reaches
+    /// the gap rule: the display shows ".5", the dot is transcribed as a speck,
+    /// the token grammar discards it and a bare 5 is published — a 10× error.
+    func testLeadingForeignGlyphIsRefusedNotStripped() {
+        for text in ["\u{2022}5", "\u{00B7}5", "\u{00B0}5", "'5"] {
+            XCTAssertEqual(FormatValidator.extractReading(from: text),
+                           .rejected(.ambiguousDecimal),
+                           "'\(text)' is '.5' or it is '5' with a speck; the text cannot say which")
+        }
+        // A token that carries its OWN separator has no decimal position at
+        // stake, so the leading mark is just decoration.
+        XCTAssertEqual(try? extracted("\u{2022}0.5").value, 0.5)
+    }
+
+    /// A LETTER in the gap is an IDENTIFIED glyph and cannot be a decimal point,
+    /// so it marks a genuine field boundary rather than a broken number. The
+    /// exemption is Unicode-wide on purpose: "µ" and "Ω" are units.
+    ///
+    /// These rows are FIELD-SELECTION errors, not magnitude errors — the same
+    /// behaviour whitespace already has — and refusing them would reject
+    /// legitimate multi-field panel lines and degrade
+    /// `ScreenCandidateDetector.numericScore`, which uses this entry point as a
+    /// display-detection heuristic.
+    func testLetterInTheGapIsAFieldBoundaryNotAForeignGlyph() {
+        for text in ["12\u{00B0}C 345", "12 V 345", "12 \u{03A9} 345", "12\u{00B5}345"] {
+            if case .rejected = FormatValidator.extractReading(from: text) {
+                XCTFail("'\(text)': a letter-bearing gap is a field boundary, not a split")
+            }
+        }
+        // ...and a unit glued to a well-formed decimal is untouched.
+        XCTAssertEqual(try? extracted("98.6 \u{00B0}F").value, 98.6)
+        XCTAssertEqual(try? extracted("90.0\u{00B0}").value, 90.0)
+        XCTAssertEqual(try? extracted("0.5\u{03A9}").value, 0.5)
+    }
+
+    /// A glyph preceded by a letter or digit is a LABEL delimiter between two
+    /// fields ("T1:5"), not a mark inside one number, so it does not refuse.
+    func testLabelDelimiterIsNotALeadingForeignGlyph() {
+        XCTAssertEqual(try? extracted("T1:5").value, 5)
+        XCTAssertEqual(try? extracted("DC VOLTS: 12.345").value, 12.345)
+    }
+
+    /// H3 — THE COST OF THE TOKENIZER RULE, named rather than smoothed over.
+    ///
+    /// `"(12345)"` is a bare integer in parentheses and this is a PURE RECALL
+    /// LOSS with no safety argument: the leading "(" is an unclassifiable glyph
+    /// in separator position and the rule cannot tell it from a speck.
+    /// `"(12.345)"` is unaffected, because that token carries its own separator.
+    ///
+    /// The other two are net safety gains: both were already returning a
+    /// FRAGMENT of an ambiguous line, and a date is not a reading at all —
+    /// today it inflates `ScreenCandidateDetector.numericScore` for regions that
+    /// are not displays.
+    func testTokenizerRefusalCostIsPinned() {
+        XCTAssertEqual(FormatValidator.extractReading(from: "(12345)"),
+                       .rejected(.ambiguousDecimal),
+                       "PURE RECALL LOSS, accepted knowingly — see this test's doc comment")
+        XCTAssertEqual(try? extracted("(12.345)").value, 12.345,
+                       "a token carrying its own separator is unaffected")
+        XCTAssertEqual(FormatValidator.extractReading(from: "80 - 8"),
+                       .rejected(.ambiguousDecimal))
+        XCTAssertEqual(FormatValidator.extractReading(from: "2024-01-15"),
+                       .rejected(.ambiguousDecimal),
+                       "a date is not a reading")
+    }
+
     // MARK: - Defect 2 regression: comma handling
 
     /// `"12,345"` tokenized into `12` and `345` and returned **345**. It is

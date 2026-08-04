@@ -42,7 +42,7 @@ actor MeasurementProcessor {
     /// today. Kept as a seam so the digit-level architecture stays wired.
     var useDigitLevelRecognition = false
 
-    private let ocr = OCRManager()
+    private let ocr: OCRManager
     private let segmenter = DigitSegmenter()
     private let digitRecognizer = DigitRecognizer()
     private let confidenceEngine = ConfidenceEngine()
@@ -61,7 +61,22 @@ actor MeasurementProcessor {
     /// (signatures and rate limits are format-dependent).
     private var formatByID: [UUID: DisplayFormat] = [:]
 
-    init() {}
+    /// - Parameter ocr: the recognition facade. Defaults to the shipping
+    ///   `OCRManager` (Vision), so every production call site is unchanged. The
+    ///   parameter exists so an evidence harness can drive the REAL validation
+    ///   chain (`FormatValidator` → `ConfidenceEngine` → `TemporalConsensus`)
+    ///   from a scripted text stream: the decimal defects this pipeline is
+    ///   judged on are properties of the TEXT sequence, and rendering pixels and
+    ///   hoping Vision transcribes them a particular way is not a controlled
+    ///   experiment. Nothing downstream of this line differs between the two.
+    ///
+    ///   Injecting at the `OCRManager` level rather than at `OCREngine` needs no
+    ///   protocol change and no change to the `any OCREngine` value crossing the
+    ///   task group in `process` — `OCRManager` already carries
+    ///   `init(engine:)`.
+    init(ocr: OCRManager = OCRManager()) {
+        self.ocr = ocr
+    }
 
     /// Replaces the active device set. Per-device validator state is preserved
     /// for devices whose format is unchanged (so adding/removing one device
@@ -277,27 +292,57 @@ actor MeasurementProcessor {
         // `reading(from:)` rather than `value(from:)`: the richer entry point
         // returns the decimal analysis alongside the value, which is what makes
         // decimal confidence fusible downstream. `value(from:)` discards it.
-        var chosen: (candidate: OCRCandidate, reading: NumericReading)?
+        // Collect EVERY parseable candidate. The early `break` this replaces
+        // meant a second, CONTRADICTORY reading of the same frame was never even
+        // computed, so nothing downstream could ever see it. The PICKER is
+        // unchanged — first parseable wins, and candidate order encodes engine
+        // preference (`.accurate` leading; see `DualPassVisionOCR`) — what is
+        // new is that a contradiction is now DETECTABLE.
+        var parsed: [(candidate: OCRCandidate, reading: NumericReading)] = []
         var firstRejection: RejectionReason?
         for candidate in candidates {
             switch FormatValidator.reading(from: candidate.text, format: format) {
             case .valid(let reading):
-                chosen = (candidate, reading)
+                parsed.append((candidate, reading))
             case .invalid(let reason):
                 if firstRejection == nil { firstRejection = reason }
             }
-            if chosen != nil { break }
         }
 
-        let display = chosen?.candidate ?? top
+        let display = parsed.first?.candidate ?? top
         let debug = debugString(text: display.text, unit: format.unit, confidence: display.confidence)
 
-        guard let chosen else {
+        guard let chosen = parsed.first else {
             return .invalidFormat(rawText: top.text,
                                   digitConfidences: nil,
                                   reason: firstRejection ?? .invalidFormat,
                                   debug: debug)
         }
+
+        // WITHIN-FRAME DECADE REFUSAL WAS TRIED HERE AND REVERTED (2026-08-04).
+        //
+        // The rule — refuse when two parseable readings of one frame are a
+        // decimal shift of each other — is SAFE (it only ever refuses, so it
+        // cannot author a magnitude). It was removed because it was measured to
+        // be net-negative as landed, not because it was dangerous:
+        //
+        //   * It fires on the HEALTHY path. `VisionOCR` requests
+        //     `topCandidates(3)` per observation and `DualPassVisionOCR` merges
+        //     `.accurate` + `.fast`, and Vision's alternate transcriptions of a
+        //     numeric region differ by exactly the decimal point precisely on
+        //     the hardware DAQPal targets — which is the §11A failure itself.
+        //   * Its "costs nothing" evidence could not have detected that cost:
+        //     every `SeparatorLedgerTests` scenario scripts exactly ONE
+        //     candidate per frame, so the rule is structurally unable to fire
+        //     inside the gate that was supposed to measure it.
+        //   * It cannot distinguish a decimal conflict from two legitimate
+        //     FIELDS one decade apart with the same digit count. Measured:
+        //     candidates ["12.5", "125", "HOLD"] — a live field beside a
+        //     setpoint — refuse on every frame, forever.
+        //
+        // Reinstate only behind a measurement over REAL multi-candidate Vision
+        // output, with the ledger extended to script multi-candidate frames so
+        // the healthy-path cost is visible. See docs/plans/ws-b-ocr-accuracy.md.
 
         // Classical seven-segment cross-check — an independent, ML-free reader of
         // the SAME frame, fused later as a corroborate-or-veto factor (never

@@ -97,33 +97,168 @@ final class TemporalConsensusTests: XCTestCase {
         XCTAssertEqual(consensus.anchoredText, "80.8")
     }
 
-    /// Direction 2: a SUSTAINED `808` series with high decimal-rescue
-    /// confidence must eventually migrate — the guard is a higher evidence bar,
-    /// not a permanent lock. A display really can change format.
-    func testSustainedDroppedSeparatorWithHighRescueConfidenceMigrates() {
-        var consensus = TemporalConsensus()
-        _ = feed(repeated("80.8", 5), into: &consensus)
+    // MARK: - THE ASYMMETRY
+    //
+    // Seeing a separator is EVIDENCE. Not seeing one is NOT. The two tests
+    // below are the same experiment run in opposite directions, and the fact
+    // that they disagree is the entire rule.
+    //
+    // DELIBERATE BEHAVIOUR CHANGE. These two replace a single earlier test,
+    // `testSustainedDroppedSeparatorWithHighRescueConfidenceMigrates`, which
+    // fed 6× "808" at decimal 0.95 and asserted the anchor MIGRATED to "808".
+    // That test encoded the bug, for three independent reasons:
+    //
+    //   1. Its stated premise was "the separator verdict is confident there is
+    //      genuinely no separator, which is the corroboration a decimal event
+    //      requires". Confidence in an ABSENCE is not evidence of an absence
+    //      when the absence is measured from TEXT: a dot destroyed by
+    //      thresholding leaves exactly the same text as a display that never
+    //      had one. That is the failure `TemporalConsensus` exists for.
+    //   2. It conflated `DecimalRescue`'s PIXEL-level absence verdict — which
+    //      is real evidence, is capped at 0.5 by `betweenDigitsOnlyCeiling`,
+    //      and is not wired into this path yet — with `FormatValidator`'s
+    //      TEXT-level absence, which is not evidence at all.
+    //   3. Its input is unreachable in production. No shipping path yields a
+    //      separator-free text at decimal confidence 0.95:
+    //      `FormatValidator.undeclaredIntegerCertainty` is 0.75, and
+    //      `MeasurementProcessor`'s `?? 1` fallback is dead because a `.parsed`
+    //      outcome always carries a `DecimalAnalysis`. A test whose only
+    //      passing input cannot occur is not protecting a behaviour.
 
-        // The separator verdict is confident that there is genuinely no
-        // separator on these frames (decimal rescue found no dot at high
-        // certainty), which is the corroboration a decimal event requires.
-        let outcomes = feed(repeated("808", 6, decimal: 0.95),
+    /// The open direction. A sustained `80.8` against an established `808`
+    /// MUST migrate: the new form carries a separator that was actually read,
+    /// which is evidence, so the guard is a higher bar and not a permanent
+    /// lock. A display really can start showing its decimal point.
+    func testSustainedSeparatorGainMigrates() {
+        var consensus = TemporalConsensus()
+        _ = feed(repeated("808", 5, decimal: FormatValidator.undeclaredIntegerCertainty),
+                 into: &consensus)
+
+        let outcomes = feed(repeated("80.8", 6, decimal: FormatValidator.readSeparatorCertainty),
                             into: &consensus,
                             startIndex: 5)
 
-        XCTAssertEqual(outcomes[0].value, 80.8, "first contradicting frame is still held off")
+        XCTAssertEqual(outcomes[0].value, 808, "first contradicting frame is still held off")
         let final = outcomes[outcomes.count - 1]
-        XCTAssertEqual(final.value, 808)
-        XCTAssertEqual(final.text, "808")
-        XCTAssertEqual(consensus.anchoredText, "808")
-        if case .ambiguous = final {
-            XCTFail("sustained, corroborated evidence must resolve, not stay ambiguous")
+        XCTAssertEqual(final.value, 80.8)
+        XCTAssertEqual(final.text, "80.8")
+        XCTAssertEqual(consensus.anchoredText, "80.8")
+        XCTAssertFalse(final.isAmbiguous,
+                       "sustained, corroborated evidence must resolve, not stay ambiguous")
+    }
+
+    /// The closed direction, at the MAXIMUM possible confidence. "However
+    /// confident" is the assertion's whole content: no value on the absence
+    /// channel may buy a 10× change, because there is no value that makes
+    /// "I saw no dot" distinguishable from "the dot did not survive".
+    func testSustainedSeparatorLossNeverMigratesHoweverConfident() {
+        var consensus = TemporalConsensus()
+        _ = feed(repeated("80.8", 5), into: &consensus)
+
+        let outcomes = feed(repeated("808", 6, decimal: 1.0), into: &consensus, startIndex: 5)
+
+        XCTAssertEqual(consensus.anchoredText, "80.8",
+                       "an absence claim must not carry a 10× migration at ANY confidence")
+        for outcome in outcomes {
+            XCTAssertNotEqual(outcome.value, 808,
+                              "uncorroborated 808 must never be published as the reading")
         }
+        // From the migration point on it is a first-class disagreement, not a
+        // quiet hold — the two refusal causes must stay distinguishable in the
+        // reason string, since `RejectionReason` flattens both to
+        // `.ambiguousDecimal` downstream.
+        for index in 3..<outcomes.count {
+            XCTAssertTrue(outcomes[index].isAmbiguous,
+                          "frame \(index + 5) should report the disagreement")
+        }
+        guard case .ambiguous(let reason, _) = outcomes[outcomes.count - 1] else {
+            return XCTFail("expected .ambiguous")
+        }
+        XCTAssertTrue(reason.contains("NO separator"),
+                      "the refusal must say WHICH cause fired; got: \(reason)")
+    }
+
+    /// The executable form of the defect. Without this, the inversion can
+    /// silently return the next time either constant is "harmonized".
+    func testCorroborationBarOutranksAnAbsenceClaim() {
+        XCTAssertGreaterThan(TemporalConsensus.decimalRescueConfidence,
+                             FormatValidator.undeclaredIntegerCertainty,
+                             "\"I saw no separator\" must never outscore the bar for "
+                             + "\"the glyph corroborates\"")
+        XCTAssertLessThanOrEqual(TemporalConsensus.decimalRescueConfidence,
+                                 FormatValidator.commaDecimalCertainty,
+                                 "a comma resolved by grouping shape is still a separator that "
+                                 + "was read, and must still be able to corroborate")
+    }
+
+    /// Same numbers, opposite outcomes. This is what proves the rule is
+    /// STRUCTURAL rather than numeric: at an identical decimal confidence of
+    /// 1.0, gaining a separator migrates and losing one does not.
+    func testIdenticalConfidenceMigratesOneWayOnly() {
+        var gaining = TemporalConsensus()
+        _ = feed(repeated("808", 5, decimal: 1.0), into: &gaining)
+        _ = feed(repeated("80.8", 6, decimal: 1.0), into: &gaining, startIndex: 5)
+        XCTAssertEqual(gaining.anchoredText, "80.8", "seeing a separator IS evidence")
+
+        var losing = TemporalConsensus()
+        _ = feed(repeated("80.8", 5, decimal: 1.0), into: &losing)
+        _ = feed(repeated("808", 6, decimal: 1.0), into: &losing, startIndex: 5)
+        XCTAssertEqual(losing.anchoredText, "80.8", "not seeing one is NOT evidence")
+    }
+
+    /// The same asymmetry driven by the values the PRODUCTION parser actually
+    /// emits, rather than by hand-picked literals. Every other acceptance
+    /// assertion in the suite hand-picks its decimal confidence, which is
+    /// exactly why the 0.75-vs-0.70 inversion was invisible for so long.
+    func testProductionSeparatorConfidencesDriveTheAsymmetry() throws {
+        guard case .number(let integerReading) = FormatValidator.extractReading(from: "808"),
+              case .number(let decimalReading) = FormatValidator.extractReading(from: "80.8") else {
+            return XCTFail("both forms must extract on the lenient Mode 3 path")
+        }
+        let integerConfidence = integerReading.decimal.confidence
+        let decimalConfidence = decimalReading.decimal.confidence
+
+        var gaining = TemporalConsensus()
+        _ = feed(repeated("808", 5, decimal: integerConfidence), into: &gaining)
+        _ = feed(repeated("80.8", 6, decimal: decimalConfidence), into: &gaining, startIndex: 5)
+        XCTAssertEqual(gaining.anchoredText, "80.8",
+                       "the production separator verdict (\(decimalConfidence)) must corroborate")
+
+        var losing = TemporalConsensus()
+        _ = feed(repeated("80.8", 5, decimal: decimalConfidence), into: &losing)
+        _ = feed(repeated("808", 6, decimal: integerConfidence), into: &losing, startIndex: 5)
+        XCTAssertEqual(losing.anchoredText, "80.8",
+                       "the production absence verdict (\(integerConfidence)) must NOT corroborate")
+    }
+
+    /// The threshold, isolated on a separator-BEARING form so it is the only
+    /// thing under test. Without this,
+    /// `testSustainedDroppedSeparatorWithoutCorroborationDoesNotMigrate` is the
+    /// suite's only threshold test and it is now vacuous — it passes for two
+    /// independent reasons (no separator AND a low confidence).
+    func testSeparatorBearingFormStillNeedsTheRaisedThreshold() {
+        var weak = TemporalConsensus()
+        _ = feed(repeated("808", 5), into: &weak)
+        _ = feed(repeated("80.8", 6, decimal: 0.70), into: &weak, startIndex: 5)
+        XCTAssertEqual(weak.anchoredText, "808",
+                       "0.70 sits below the raised bar and must no longer buy a 10× change")
+
+        var strong = TemporalConsensus()
+        _ = feed(repeated("808", 5), into: &strong)
+        _ = feed(repeated("80.8", 6, decimal: 0.80), into: &strong, startIndex: 5)
+        XCTAssertEqual(strong.anchoredText, "80.8",
+                       "a structurally resolved separator must still be able to corroborate")
     }
 
     /// The same sustained series WITHOUT corroboration (the separator verdict is
     /// itself unsure) must not migrate. Evidence quality, not just repetition,
     /// is what buys a 10× change.
+    ///
+    /// NOTE: this now passes for two independent reasons (the new form has no
+    /// separator, AND 0.4 is below the bar), so it no longer discriminates the
+    /// threshold. It is kept as a behavioural pin;
+    /// `testSeparatorBearingFormStillNeedsTheRaisedThreshold` restores the
+    /// threshold discrimination.
     func testSustainedDroppedSeparatorWithoutCorroborationDoesNotMigrate() {
         var consensus = TemporalConsensus()
         _ = feed(repeated("80.8", 5), into: &consensus)
@@ -139,6 +274,59 @@ final class TemporalConsensusTests: XCTestCase {
             XCTAssertNotEqual(outcome.value, 808,
                               "uncorroborated 808 must never be published as the reading")
         }
+    }
+
+    // MARK: - H3: the cost of the asymmetry, measured and printed
+
+    /// THE PRICE OF THE RULE, stated out loud rather than smoothed over.
+    ///
+    /// Once a separator-bearing form is anchored, a display that genuinely
+    /// STOPS showing its separator refuses forever: `expire` releases the anchor
+    /// only when the window fully EMPTIES (> `windowHorizon` with no
+    /// observations), so while frames keep arriving the integer run yields
+    /// `.ambiguous` on every frame — even after the anchor's own support in the
+    /// window has fallen to zero.
+    ///
+    /// This is correct under the product promise and D10: "this is an integer
+    /// display" and "this display's dot stopped surviving preprocessing" are
+    /// the same observation, and refusal is the answer for that class. It is
+    /// still a cost, and it is printed so it appears in CI output rather than
+    /// being inferred from a pass rate.
+    ///
+    /// HANDOFF TO B6: the deadlock escape must NOT be `reset()`-and-re-anchor.
+    /// Releasing the anchor lets the window re-anchor on the integer form in
+    /// `anchorSupport` (2) frames and publishes the 10× error through the back
+    /// door — this exact bug, one layer up. The escape must be "stay refused and
+    /// surface a re-configuration request", or a user-declared `DisplayFormat`
+    /// (Mode 2), which is the only authority permitted to settle a decimal
+    /// position.
+    func testH3CostSeparatorAnchoredDisplayThatLosesItsDotRefusesForever() {
+        var consensus = TemporalConsensus()
+        _ = feed(repeated("80.8", 2), into: &consensus)
+        let run = feed(repeated("808", 20, decimal: FormatValidator.undeclaredIntegerCertainty),
+                       into: &consensus,
+                       startIndex: 2)
+
+        let refused = run.filter(\.isAmbiguous).count
+        let published808 = run.filter { $0.value == 808 }.count
+        print("""
+
+        === H3 COST (TemporalConsensus, separator-anchored integer run) ===
+        anchor "80.8" (2 frames) then 20 frames of "808" at the production \
+        absence verdict \(FormatValidator.undeclaredIntegerCertainty):
+          refused (.ambiguous): \(refused) / \(run.count)
+          published as 808:     \(published808) / \(run.count)
+          anchor after the run: \(consensus.anchoredText ?? "nil")
+        A genuine integer instrument whose FIRST anchored form carried a \
+        separator is refused indefinitely. Accepted per the product promise; \
+        handed to B6 with the escape constraint above.
+
+        """)
+
+        XCTAssertEqual(published808, 0, "the 10× form must never be published")
+        XCTAssertEqual(consensus.anchoredText, "80.8", "the anchor is held, not migrated")
+        XCTAssertGreaterThanOrEqual(refused, 15,
+                                    "the sustained run must REFUSE, not quietly hold forever")
     }
 
     // MARK: - Rule 4: genuine change must still get through
@@ -284,6 +472,43 @@ final class TemporalConsensusTests: XCTestCase {
         // Zero has no ratio.
         XCTAssertNil(TemporalConsensus.decimalShiftExponent(from: 0, text: "0.0",
                                                             to: 0, text: "00"))
+    }
+
+    /// The full truth table for the decade predicate, which is now used in TWO
+    /// places — across frames (the anchor guard in `MeasurementProcessor`) and
+    /// WITHIN one frame (`decimalConflict`, the two-candidate refusal). Pinning
+    /// it here keeps ONE definition of "these two readings differ only by a
+    /// decimal shift" in the codebase instead of two that can drift apart.
+    func testDecimalShiftPredicateTruthTable() {
+        func shift(_ a: String, _ b: String) -> Int? {
+            guard let aValue = Double(a), let bValue = Double(b) else {
+                XCTFail("fixture \(a)/\(b) is not numeric"); return nil
+            }
+            return TemporalConsensus.decimalShiftExponent(from: aValue, text: a,
+                                                          to: bValue, text: b)
+        }
+
+        // FIRES — the same digits at two decimal positions.
+        for pair in [("900", "90.0"), ("808", "80.8"), ("5", ".5"), ("1.00", "100"),
+                     ("99.9", "999"), ("12.5", "1.25"), ("100.0", "1000")] {
+            XCTAssertNotNil(shift(pair.0, pair.1), "\(pair.0) vs \(pair.1) is a decade pair")
+        }
+
+        // DOES NOT FIRE, and each row is load-bearing.
+        XCTAssertNil(shift("900", "92.7"),
+                     "two different FIELDS — the hazard the digit-count rule exists for")
+        XCTAssertNil(shift("0.000", "000"), "zero: a dropped separator here is not a scale error")
+        XCTAssertNil(shift("0.00", "0"), "zero vs zero")
+        XCTAssertNil(shift("12.345", "345"), "tokenizer truncation is the tokenizer's job")
+        XCTAssertNil(shift("-20.5", "20.5"), "a pure sign flip is a digit error, not a decade one")
+        XCTAssertNil(shift("-8.08", "80.8"),
+                     "KNOWN GAP: sign flip AND decade together — widening this would swallow "
+                     + "pure sign flips, which the verdict taxonomy defines as not a scale error")
+        XCTAssertNil(shift("88888", "88"),
+                     "a truncated reading is not a decade neighbour — this is the measured false "
+                     + "positive of the looser 'spans one decade of magnitude' rule")
+        XCTAssertNil(shift("12.347", "12.347"), "identical readings never conflict")
+        XCTAssertNil(shift("1.5", "1.50"), "same value, different written precision")
     }
 
     // MARK: - Lifecycle
