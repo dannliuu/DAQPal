@@ -24,7 +24,34 @@ The module is written, unit-tested (23/23), measured working (`"80.8"` → posit
 - Fusion contract (per ARCHITECTURE's design intent): rescue **corroborates or vetoes** via `ConfidenceEngine` — it never solely authors a value. Its `confidentAbsence` ceiling discipline (0.5 between-digits cap) carries over.
 - **Evidence gate**: integration tests (rescue fires on the designed triggers, never on clean reads); 65/72 currently-correct benchmark cases unchanged; suite green.
 
-### B2 — Feed `DisplayFormatInference` into `TemporalConsensus`
+### B0.5 — The separator ledger + the 0.75/0.70 inversion (NEW, do this FIRST)
+**Supersedes B2 and rewrites B3.** See `docs/plans/AUTO_DECIMAL_RESEARCH.md` for the measurements.
+
+THE DEFECT, one constant comparison: `FormatValidator.undeclaredIntegerCertainty = 0.75` (`:119`) is ABOVE
+`TemporalConsensus.decimalRescueConfidence = 0.70` (`:125`). So "I saw no separator" outscores the bar for "the
+separator corroborates", and `guard corroboratedBySeparator || corroboratedByPrior` (`TemporalConsensus.swift:333`)
+**can never fail** — measured, 0 of 27 parseable readings fell below the bar. The documented "a 10x change needs
+independent corroboration" rule does not exist at runtime. Measured consequence: anchored on 80.8, a sustained 808 run
+migrates the anchor at frame 7 and publishes 808 as STABLE forever. That same 0.75 is where "wrong readings carried
+0.75 confidence" comes from (1.0 OCR x 0.75).
+
+- Make absence-of-separator a REFUSAL, not corroboration. Keep the asymmetry: seeing a separator is evidence, not
+  seeing one is not — so 808 -> 80.8 may still migrate, 80.8 -> 808 may not.
+- **Evidence gate**: 8 scenarios x 90 frames through the real OCRManager -> FormatValidator -> ConfidenceEngine ->
+  TemporalConsensus chain; assert `wrongAndAccepted == 0` in ALL EIGHT rows (shipping baseline: 158 total).
+- **DO NOT let the ledger REFORMAT a reading.** If a latched `##.#` grammar is ever used to rewrite "900" as 90.0 it
+  becomes a decade-error generator the moment the instrument autoranges. Gate only; never author.
+
+### B2 — ~~Feed `DisplayFormatInference` into `TemporalConsensus`~~ **CANCELLED — measured zero-delta**
+Four sequences replayed with `formatPrior: nil` vs a live prior produced **identical outcome streams frame-for-frame**.
+The prior's two effects are both dead: its confidence multiplication (`TemporalConsensus.swift:566`) feeds an Outcome
+confidence that `MeasurementProcessor.swift:472` discards (`case .stable(let v, let t, _)`), and its corroboration path
+is short-circuited by the 0.75/0.70 inversion above. Worse, on the measured failure class the prior **certifies the
+error** — it is a majority vote over grammars derived from the OCR text, so it tracks the mode of the OCR distribution,
+not the display. It filters minority noise and is structurally blind to systematic bias, which is what our failure is.
+Do not schedule as a decimal item. → superseded by B0.5
+
+### B2-old (retained for provenance)
 The format prior is passed as literally `formatPrior: nil,` at `MeasurementProcessor.swift:454` (audit-confirmed verbatim 2026-08-03; `DisplayFormatInference` has zero live-path references).
 - Wire the inferred format as the consensus prior; prior resolves ambiguous decimal position; a *conflicting* prior forces refusal, never a silent override.
 - **Evidence gate**: unit tests — ambiguous stream + correct prior → resolved; ambiguous stream + wrong prior → refused; no prior → current behavior.
